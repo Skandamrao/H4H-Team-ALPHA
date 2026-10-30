@@ -27,8 +27,11 @@ class Settings(BaseSettings):
     backend_host: str = "0.0.0.0"
     backend_port: int = 8000
 
-    # CORS — stored as a comma-separated string in .env
+    # CORS — comma-separated list of allowed origins
+    # In production set to your Vercel URL e.g. https://chronograph-ai.vercel.app
+    # Set cors_allow_all=true for open hackathon demo access
     allowed_origins_raw: str = "http://localhost:5173,http://localhost:3000"
+    cors_allow_all: bool = False
 
     # Logging
     log_level: str = "INFO"
@@ -36,6 +39,8 @@ class Settings(BaseSettings):
 
     @property
     def allowed_origins(self) -> List[str]:
+        if self.cors_allow_all:
+            return ["*"]
         return [o.strip() for o in self.allowed_origins_raw.split(",")]
 
     @property
@@ -44,4 +49,3 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-

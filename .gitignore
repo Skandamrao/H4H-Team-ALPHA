@@ -6,8 +6,10 @@
 .env.local
 .env.*.local
 backend/.env
+frontend/.env.production
 !.env.example
 !backend/.env.example
+!frontend/.env.production.example
 
 # ─── Python ──────────────────────────────────────────────────────────────────
 __pycache__/
