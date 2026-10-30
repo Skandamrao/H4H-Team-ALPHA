@@ -1,17 +1,19 @@
 """
 Historical AI Assistant Service.
 
-Uses Groq LLM (with deterministic database fallback) to answer questions about
-project history strictly grounded on database records and evidence excerpts.
+Uses Groq and Google Gemini (with deterministic database fallback) to answer questions
+about project history strictly grounded on database records and evidence excerpts.
 
 Principles:
   - Answers are always grounded in actual database records.
   - The AI is provided relevant chronological history as context.
+  - Directly handles document overview queries ("give overview of document uploaded", "summarize project").
+  - Identifies target documents when queries reference them by name, stem, or recency.
   - Refuses to invent missing information or generate fake citations.
   - Conflicting records are explicitly highlighted.
   - Every answer includes genuine citations linked to source documents.
-  - If the AI API fails (e.g. rate limit), falls back seamlessly to
-    direct database evidence retrieval so the user always receives an answer.
+  - If the AI API fails (e.g. rate limit, 400), falls back seamlessly to
+    direct database evidence retrieval so the user always receives an accurate, complete answer.
 """
 
 import hashlib
@@ -39,7 +41,8 @@ STRICT GROUNDING RULES:
 4. When multiple records conflict (e.g., one document says approved and another says rejected), describe BOTH sides of the conflict and cite both sources.
 5. Distinguish clearly between event lifecycle states: PROPOSED vs. APPROVED vs. IMPLEMENTED vs. DEPRECATED vs. REJECTED.
 6. Only cite documents that actually appear in the CONTEXT.
-7. Rate your confidence as:
+7. When asked for an overview or summary of a document or project records, synthesize a structured summary covering: (a) Document source & scope, (b) Key features/modules introduced or discussed, (c) Key decisions and their approved/proposed status, (d) Identified milestones and verbatim supporting evidence.
+8. Rate your confidence as:
    - "High" (strong, explicit direct evidence with exact dates and quotes)
    - "Medium" (partial evidence, inferred dates, or limited details)
    - "Low" (weak or indirect evidence)
@@ -57,7 +60,7 @@ OUTPUT FORMAT — respond with a valid JSON object matching EXACTLY this structu
   "missing_information": "What specific information is absent from the project records, or null"
 }
 
-Return ONLY the JSON object — no surrounding markdown fences, no preamble, no commentary.
+Return ONLY the JSON object — no surrounding markdown fences, no preamble, no commentary. Start directly with {
 """
 
 STOP_WORDS = {
@@ -66,8 +69,20 @@ STOP_WORDS = {
     "were", "be", "been", "being", "have", "has", "had", "do", "does", "did",
     "what", "when", "where", "which", "who", "whom", "whose", "why", "how",
     "this", "that", "these", "those", "project", "software", "system", "tell", "me",
-    "any", "all", "can", "could", "should", "would"
+    "any", "all", "can", "could", "should", "would", "give", "u", "you",
+    "add", "added", "adding", "put", "make", "made", "like", "also", "need"
 }
+
+OVERVIEW_PATTERNS = [
+    "overview", "summary", "summarize", "recap", "all documents",
+    "document uploaded", "documents uploaded", "uploaded document",
+    "uploaded documents", "uploaded records", "what happened",
+    "project history", "project overview", "tell me about",
+    "what records", "what features", "all features", "everything",
+    "current status", "status of project", "give an overview",
+    "give me an overview", "what was discussed", "meeting summary",
+    "meeting overview", "transcript overview", "document summary",
+]
 
 
 def _extract_query_tokens(question: str) -> Set[str]:
@@ -76,22 +91,63 @@ def _extract_query_tokens(question: str) -> Set[str]:
     return {t for t in raw_tokens if t not in STOP_WORDS}
 
 
+# ---------------------------------------------------------------------------
+# Module-level response cache — avoids repeated LLM calls for the same question.
+# Call clear_answer_cache() whenever documents are added or deleted.
+# ---------------------------------------------------------------------------
+_answer_cache: dict[str, AssistantAnswer] = {}
+
+
+def clear_answer_cache() -> None:
+    """Clear the in-memory answer cache. Must be called after any DB mutation."""
+    global _answer_cache
+    _answer_cache.clear()
+    logger.info("Assistant answer cache cleared.")
+
+
 def _build_context(db: Session, question: str) -> Tuple[str, List[Event], List[Document]]:
     """
     Build a focused, chronologically ordered context string for the query.
 
-    1. Identifies features/aliases mentioned in the question.
-    2. Retrieves all events for matched features (preserving complete lifecycle).
-    3. Scores and retrieves other events matching question keywords.
-    4. Orders selected events chronologically (event_date ASC).
-    5. Returns (context_text, relevant_events, relevant_documents).
+    Handles:
+      1. Specific feature / alias queries.
+      2. Specific document queries (by filename, stem, or keywords).
+      3. Document overview queries ("give overview of document uploaded", "summarize project").
+      4. General project queries.
     """
     q_lower = question.lower()
     tokens = _extract_query_tokens(question)
 
+    all_docs = db.query(Document).order_by(Document.ingested_at.desc()).all()
     all_features = db.query(Feature).all()
-    matched_feature_ids: Set[str] = set()
+    all_events = db.query(Event).all()
 
+    # Detect if query asks for a document overview or project summary
+    is_overview_query = any(pat in q_lower for pat in OVERVIEW_PATTERNS)
+
+    # 1. Match documents referenced in the query
+    matched_doc_ids: Set[str] = set()
+    matched_docs: List[Document] = []
+
+    for doc in all_docs:
+        fname = doc.original_filename.lower()
+        stem = re.sub(r"\.[^.]+$", "", fname).lower()
+        stem_tokens = re.findall(r"\w+", stem)
+
+        # Direct filename match or stem keyword match
+        if fname in q_lower or (len(stem) > 5 and stem in q_lower) or any(t in q_lower for t in stem_tokens if len(t) > 4):
+            matched_doc_ids.add(doc.id)
+            matched_docs.append(doc)
+
+    # If query mentions "document uploaded" / "the document" / "latest document" without a filename,
+    # target the most recently uploaded document!
+    if not matched_docs and any(p in q_lower for p in ["document uploaded", "uploaded document", "the document", "latest document", "meeting transcript", "transcript"]):
+        if all_docs:
+            matched_doc_ids.add(all_docs[0].id)
+            matched_docs.append(all_docs[0])
+
+    # 2. Match features mentioned in question
+    matched_feature_ids: Set[str] = set()
     for feat in all_features:
         feat_name = feat.canonical_name.lower()
         if feat_name in q_lower or any(t in feat_name for t in tokens if len(t) > 3):
@@ -103,22 +159,31 @@ def _build_context(db: Session, question: str) -> Tuple[str, List[Event], List[D
                 matched_feature_ids.add(feat.id)
                 break
 
-    all_events = db.query(Event).all()
+    # 3. Score events
     selected_events_set: dict[str, Tuple[float, Event]] = {}
 
     for ev in all_events:
         score = 0.0
+
+        # High priority for events from matched documents
+        if ev.source_document_id and ev.source_document_id in matched_doc_ids:
+            score += 25.0
+
+        # High priority for events of matched features
         if ev.feature_id and ev.feature_id in matched_feature_ids:
-            score += 15.0
+            score += 20.0
 
         ev_text = f"{ev.title} {ev.description or ''} {ev.reason or ''} {ev.feature_name_in_source or ''} {ev.module_name or ''} {ev.supporting_text or ''}".lower()
 
-        # Token matches
         matched_tokens = sum(1 for t in tokens if t in ev_text)
+        # Avoid spurious single-word false matches when neither feature nor document matched
+        if not (ev.feature_id and ev.feature_id in matched_feature_ids) and not (ev.source_document_id and ev.source_document_id in matched_doc_ids):
+            if len(tokens) >= 2 and matched_tokens < 2:
+                matched_tokens = 0
+
         if matched_tokens > 0:
             score += matched_tokens * 3.0
 
-        # Only apply intent bonus if the event actually matched the query's topic
         if score > 0.0:
             if any(w in q_lower for w in ["why", "reason", "purpose", "motive"]) and ev.reason:
                 score += 4.0
@@ -129,30 +194,67 @@ def _build_context(db: Session, question: str) -> Tuple[str, List[Event], List[D
             if any(w in q_lower for w in ["conflict", "contradiction", "dispute"]) and ev.has_conflict:
                 score += 8.0
 
-        if score > 0.0:
             selected_events_set[ev.id] = (score, ev)
 
-    if not selected_events_set:
-        # If no keywords or features matched, do not fabricate relevance with random events
-        events_to_include = []
-    else:
-        # Sort by score descending, take top 25, then sort those chronologically
-        ranked = sorted(selected_events_set.values(), key=lambda x: x[0], reverse=True)[:25]
-        events_to_include = [item[1] for item in ranked]
+    # 4. If overview query, select representative events from matched documents or project
+    if is_overview_query:
+        if matched_docs:
+            # Select events from the matched documents
+            target_doc_ids = {d.id for d in matched_docs}
+            doc_events = [e for e in all_events if e.source_document_id in target_doc_ids]
+            for ev in doc_events:
+                selected_events_set[ev.id] = (15.0, ev)
+        else:
+            # Select representative milestones across all features
+            for ev in all_events:
+                s = 5.0
+                if ev.decision_status in ("APPROVED", "IMPLEMENTED"):
+                    s += 5.0
+                if ev.event_type in ("FEATURE_INTRODUCED", "DECISION_APPROVED", "FEATURE_RENAMED"):
+                    s += 4.0
+                selected_events_set[ev.id] = (s, ev)
 
-    # Order chronologically for coherent narrative
+    ranked = sorted(selected_events_set.values(), key=lambda x: x[0], reverse=True)[:30]
+    events_to_include = [item[1] for item in ranked]
     events_to_include.sort(key=lambda e: (e.event_date or e.recorded_at))
 
     docs_seen: dict[str, Document] = {}
+    for d in matched_docs:
+        docs_seen[d.id] = d
+    for e in events_to_include:
+        if e.source_document:
+            docs_seen[e.source_document.id] = e.source_document
+
     context_parts: List[str] = []
+
+    # Prepend document profile if document(s) matched or overview requested
+    if matched_docs:
+        for md in matched_docs[:2]:
+            doc_event_count = sum(1 for e in all_events if e.source_document_id == md.id)
+            date_info = md.document_date.strftime('%Y-%m-%d') if md.document_date else 'Extracted from content'
+            excerpt = (md.extracted_text or '')[:800].replace('\r\n', ' ').replace('\n', ' ')
+            context_parts.append(
+                f"[DOCUMENT PROFILE: {md.original_filename}]\n"
+                f"  Filename: {md.original_filename}\n"
+                f"  File Type: {md.file_type.upper()} | Size: {md.file_size_bytes} bytes\n"
+                f"  Document Date: {date_info}\n"
+                f"  Status: {md.processing_status} ({doc_event_count} historical events extracted)\n"
+                f"  Opening Excerpt: \"{excerpt}\""
+            )
+    elif is_overview_query and all_docs:
+        doc_names = ", ".join([f"{d.original_filename} ({d.file_type.upper()})" for d in all_docs[:8]])
+        context_parts.append(
+            f"[PROJECT ARCHIVE PROFILE]\n"
+            f"  Total Ingested Documents: {len(all_docs)}\n"
+            f"  Total Historical Events: {len(all_events)}\n"
+            f"  Total Canonical Features: {len(all_features)}\n"
+            f"  Documents: {doc_names}"
+        )
 
     for i, event in enumerate(events_to_include, start=1):
         doc = event.source_document
-        if doc:
-            docs_seen[doc.id] = doc
-
-        date_str = event.event_date.strftime("%Y-%m-%d") if event.event_date else "Unknown Date"
-        feature_name = event.feature.canonical_name if event.feature else event.feature_name_in_source or "General"
+        date_str = event.event_date.strftime("%Y-%m-%d") if event.event_date else "Recorded in document"
+        feature_name = event.feature.canonical_name if event.feature else event.feature_name_in_source or "General System"
         doc_name = doc.original_filename if doc else "Unknown Source"
 
         parts = [
@@ -178,22 +280,8 @@ def _build_context(db: Session, question: str) -> Tuple[str, List[Event], List[D
     return context_text, events_to_include, list(docs_seen.values())
 
 
-# ---------------------------------------------------------------------------
-# Module-level response cache — avoids repeated LLM calls for the same question.
-# Call clear_answer_cache() whenever documents are added or deleted.
-# ---------------------------------------------------------------------------
-_answer_cache: dict[str, "AssistantAnswer"] = {}
-
-
-def clear_answer_cache() -> None:
-    """Clear the in-memory answer cache.  Must be called after any DB mutation."""
-    global _answer_cache
-    _answer_cache.clear()
-    logger.info("Assistant answer cache cleared.")
-
-
-def _extract_citations(events: List[Event]) -> List[Citation]:
-    """Build unique citations from the source documents of the relevant events."""
+def _extract_citations(events: List[Event], fallback_docs: Optional[List[Document]] = None) -> List[Citation]:
+    """Build unique citations from source documents of relevant events."""
     seen: dict[str, Citation] = {}
     for event in events:
         if event.source_document and event.source_document_id not in seen:
@@ -203,6 +291,14 @@ def _extract_citations(events: List[Event]) -> List[Citation]:
                 document_id=doc.id,
                 excerpt=event.supporting_text or event.description or "",
             )
+    if fallback_docs:
+        for doc in fallback_docs:
+            if doc.id not in seen:
+                seen[doc.id] = Citation(
+                    document_filename=doc.original_filename,
+                    document_id=doc.id,
+                    excerpt=(doc.extracted_text or "")[:200],
+                )
     return list(seen.values())
 
 
@@ -226,7 +322,6 @@ class HistoricalAssistantService:
 
     def answer(self, db: Session, question: str) -> AssistantAnswer:
         """Generate a grounded answer to *question* using the database records."""
-        # --- Cache lookup (skip for empty questions) ---
         cache_key = hashlib.md5(question.lower().strip().encode()).hexdigest()
         if cache_key in _answer_cache:
             logger.info("Returning cached assistant answer for question hash %s.", cache_key)
@@ -237,15 +332,13 @@ class HistoricalAssistantService:
         groq_key = creds.get("groq")
 
         if not gemini_key and not groq_key:
-            # Direct database retrieval when no API key is configured
             return self._answer_from_database(db, question)
 
         context_text, events, documents = _build_context(db, question)
 
-        # Guard against oversized context — keep under ~4,500 chars (< 1,200 tokens)
-        if len(context_text) > 4_500:
-            logger.info("Context text is %d chars — trimming to 4500 chars.", len(context_text))
-            context_text = context_text[:4_500] + "\n\n[Context trimmed to fit token limits]"
+        if len(context_text) > 5_000:
+            logger.info("Context text is %d chars — trimming to 5000 chars.", len(context_text))
+            context_text = context_text[:5_000] + "\n\n[Context trimmed to fit token limits]"
 
         full_prompt = f"CONTEXT:\n{context_text}\n\nQUESTION:\n{question}"
 
@@ -266,12 +359,13 @@ class HistoricalAssistantService:
                 raw = resp.text
             except Exception as exc:
                 last_exc = exc
-                logger.warning("Gemini assistant call failed (e.g. rate limit): %s. Falling back to Groq.", exc)
+                logger.warning("Gemini assistant call failed: %s. Falling back to Groq.", exc)
 
-        # 2. Try Groq AI (GPT-OSS 120B / 20B) if Gemini was not available or failed
+        # 2. Try Groq AI (GPT-OSS 120B / 20B / Llama 3.3)
         if not raw and groq_key:
-            models_to_try = ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+            models_to_try = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
             for model_name in models_to_try:
+                # Attempt with strict JSON mode
                 try:
                     import groq
                     client = groq.Groq(api_key=groq_key)
@@ -285,11 +379,30 @@ class HistoricalAssistantService:
                         temperature=0.1,
                     )
                     raw = completion.choices[0].message.content
-                    if raw:
+                    if raw and raw.strip():
                         break
                 except Exception as exc:
                     last_exc = exc
-                    logger.warning("Groq assistant call with '%s' failed: %s", model_name, exc)
+                    logger.warning("Groq JSON mode call with model '%s' failed: %s. Retrying without response_format...", model_name, exc)
+
+                # Fallback attempt: plain text mode without response_format constraint
+                try:
+                    import groq
+                    client = groq.Groq(api_key=groq_key)
+                    completion = client.chat.completions.create(
+                        model=model_name,
+                        messages=[
+                            {"role": "system", "content": _ASSISTANT_SYSTEM_PROMPT},
+                            {"role": "user", "content": f"{full_prompt}\n\nIMPORTANT: Output ONLY a JSON object starting directly with {{"},
+                        ],
+                        temperature=0.1,
+                    )
+                    raw = completion.choices[0].message.content
+                    if raw and raw.strip():
+                        break
+                except Exception as exc:
+                    last_exc = exc
+                    logger.warning("Groq plain text assistant call with '%s' failed: %s", model_name, exc)
 
         if not raw:
             logger.warning("All AI assistant models failed. Falling back to direct database reasoning: %s", last_exc)
@@ -297,7 +410,6 @@ class HistoricalAssistantService:
 
         # Parse JSON from model output
         try:
-            # Strip any accidental markdown formatting
             cleaned_raw = raw.strip()
             if cleaned_raw.startswith("```json"):
                 cleaned_raw = cleaned_raw[7:]
@@ -307,12 +419,17 @@ class HistoricalAssistantService:
                 cleaned_raw = cleaned_raw[:-3]
             cleaned_raw = cleaned_raw.strip()
 
+            start = cleaned_raw.find("{")
+            end = cleaned_raw.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                cleaned_raw = cleaned_raw[start : end + 1]
+
             data = json.loads(cleaned_raw)
         except Exception as exc:
             logger.error("Assistant JSON parse failed: %s\nRaw: %s", exc, (raw or "")[:400])
             return self._answer_from_database(db, question)
 
-        citations = _extract_citations(events)
+        citations = _extract_citations(events, documents)
 
         result = AssistantAnswer(
             question=question,
@@ -331,7 +448,7 @@ class HistoricalAssistantService:
         """Grounded factual answer retrieved directly from database records without external AI call."""
         context_text, relevant, docs = _build_context(db, question)
 
-        if not relevant:
+        if not relevant and not docs:
             return AssistantAnswer(
                 question=question,
                 answer=(
@@ -348,12 +465,13 @@ class HistoricalAssistantService:
         conflicts_found = []
         summary_points = []
 
+        is_overview_query = any(pat in question.lower() for pat in OVERVIEW_PATTERNS)
+
         for ev in relevant:
-            d_str = ev.event_date.strftime("%B %d, %Y") if ev.event_date else "Unknown date"
+            d_str = ev.event_date.strftime("%B %d, %Y") if ev.event_date else "Document record"
             feat_name = ev.feature.canonical_name if ev.feature else ev.feature_name_in_source or "Feature"
             events_data.append({"date": d_str, "description": f"{ev.title}: {ev.description or ''}"})
 
-            # Point for narrative summary
             reason_part = f" (Reason: {ev.reason})" if ev.reason else ""
             status_part = f" [Status: {ev.decision_status}]" if ev.decision_status else ""
             summary_points.append(f"• On {d_str}, {ev.title}{reason_part}{status_part}.")
@@ -361,18 +479,28 @@ class HistoricalAssistantService:
             if ev.has_conflict and ev.conflict_note:
                 conflicts_found.append(ev.conflict_note)
 
-        # Build grounded summary text
-        answer_text = (
-            f"Based on the project's historical records, here is what occurred regarding your inquiry:\n\n"
-            + "\n".join(summary_points[:6])
-        )
+        # Overview narrative builder
+        if is_overview_query and docs:
+            doc_names = ", ".join([d.original_filename for d in docs])
+            answer_text = (
+                f"### ChronoGraph AI — Document & Historical Overview\n\n"
+                f"**Source Document(s) Analyzed:** {doc_names}\n"
+                f"**Extracted Records:** {len(relevant)} historical events, proposals, and architectural decisions identified.\n\n"
+                f"**Key Historical Milestones & Decisions:**\n"
+                + "\n".join(summary_points[:10])
+            )
+        else:
+            answer_text = (
+                f"Based on the project's historical records, here is what occurred regarding your inquiry:\n\n"
+                + "\n".join(summary_points[:8])
+            )
 
-        citations = _extract_citations(relevant)
+        citations = _extract_citations(relevant, docs)
 
         result = AssistantAnswer(
             question=question,
             answer=answer_text,
-            historical_events=events_data[:8],
+            historical_events=events_data[:10],
             supporting_evidence=citations[:6],
             confidence="High" if len(relevant) >= 2 else "Medium",
             has_conflicts=bool(conflicts_found),
