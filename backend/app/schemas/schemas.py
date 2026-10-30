@@ -39,6 +39,12 @@ class DecisionStatus(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
+class ActionItemStatus(str, Enum):
+    OPEN = "OPEN"
+    COMPLETED = "COMPLETED"
+    CANCELLED = "CANCELLED"
+
+
 class DateConfidence(str, Enum):
     HIGH = "HIGH"
     MEDIUM = "MEDIUM"
@@ -79,6 +85,7 @@ class ExtractedEvent(BaseModel):
     event_date_confidence: DateConfidence = DateConfidence.UNKNOWN
     decision_status: Optional[DecisionStatus] = None
     responsible_person: Optional[str] = None
+    action_items: List["ActionItem"] = Field(default_factory=list)
     supporting_text: str = Field(default="")   # Verbatim excerpt from source
     confidence_score: float = Field(default=0.5, ge=0.0, le=1.0)
 
@@ -95,6 +102,29 @@ class ExtractedEvent(BaseModel):
         if v is None:
             return []
         return v
+
+
+class ActionItem(BaseModel):
+    """An assigned task extracted from a meeting transcript."""
+    action: str = Field(..., min_length=1)
+    owner: Optional[str] = None
+    status: ActionItemStatus = ActionItemStatus.OPEN
+    deadline: Optional[str] = None
+    supporting_text: str = Field(default="")
+
+
+class MeetingAnalysis(BaseModel):
+    """Structured meeting transcript analysis output."""
+    meeting_title: Optional[str] = None
+    meeting_date: Optional[str] = None
+    participants: List[str] = Field(default_factory=list)
+    topics: List[str] = Field(default_factory=list)
+    summary: str = Field(default="")
+    features: List[str] = Field(default_factory=list)
+    proposals: List[dict] = Field(default_factory=list)
+    decisions: List[dict] = Field(default_factory=list)
+    action_items: List[ActionItem] = Field(default_factory=list)
+    events: List[ExtractedEvent] = Field(default_factory=list)
 
 
 class ExtractionResult(BaseModel):
@@ -128,6 +158,35 @@ class DocumentResponse(BaseModel):
 class DocumentListResponse(BaseModel):
     total: int
     documents: List[DocumentResponse]
+
+
+# ── Meeting Analysis Schemas ──────────────────────────────────────────────────
+
+class ActionItemResponse(BaseModel):
+    id: str
+    action: str
+    owner: Optional[str] = None
+    status: str
+    deadline: Optional[str] = None
+    supporting_text: Optional[str] = None
+    event_id: Optional[str] = None
+
+    model_config = {"from_attributes": True}
+
+
+class MeetingAnalysisResponse(BaseModel):
+    document_id: str
+    meeting_title: Optional[str] = None
+    meeting_date: Optional[datetime] = None
+    meeting_date_confidence: str = "UNKNOWN"
+    participants: List[str] = []
+    topics: List[str] = []
+    summary: str = ""
+    features: List[str] = []
+    proposals: List[dict] = []
+    decisions: List[dict] = []
+    action_items: List[ActionItemResponse] = []
+    events: List[EventResponse] = []
 
 
 # ── Feature Schemas ───────────────────────────────────────────────────────────

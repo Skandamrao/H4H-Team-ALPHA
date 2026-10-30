@@ -14,6 +14,7 @@ Principles:
     direct database evidence retrieval so the user always receives an answer.
 """
 
+import hashlib
 import json
 import logging
 import re
@@ -177,6 +178,20 @@ def _build_context(db: Session, question: str) -> Tuple[str, List[Event], List[D
     return context_text, events_to_include, list(docs_seen.values())
 
 
+# ---------------------------------------------------------------------------
+# Module-level response cache — avoids repeated LLM calls for the same question.
+# Call clear_answer_cache() whenever documents are added or deleted.
+# ---------------------------------------------------------------------------
+_answer_cache: dict[str, "AssistantAnswer"] = {}
+
+
+def clear_answer_cache() -> None:
+    """Clear the in-memory answer cache.  Must be called after any DB mutation."""
+    global _answer_cache
+    _answer_cache.clear()
+    logger.info("Assistant answer cache cleared.")
+
+
 def _extract_citations(events: List[Event]) -> List[Citation]:
     """Build unique citations from the source documents of the relevant events."""
     seen: dict[str, Citation] = {}
@@ -211,6 +226,12 @@ class HistoricalAssistantService:
 
     def answer(self, db: Session, question: str) -> AssistantAnswer:
         """Generate a grounded answer to *question* using the database records."""
+        # --- Cache lookup (skip for empty questions) ---
+        cache_key = hashlib.md5(question.lower().strip().encode()).hexdigest()
+        if cache_key in _answer_cache:
+            logger.info("Returning cached assistant answer for question hash %s.", cache_key)
+            return _answer_cache[cache_key]
+
         creds = self._get_credentials()
         gemini_key = creds.get("gemini")
         groq_key = creds.get("groq")
@@ -293,7 +314,7 @@ class HistoricalAssistantService:
 
         citations = _extract_citations(events)
 
-        return AssistantAnswer(
+        result = AssistantAnswer(
             question=question,
             answer=data.get("answer", "No answer generated."),
             historical_events=data.get("historical_events", []),
@@ -303,6 +324,8 @@ class HistoricalAssistantService:
             conflict_note=data.get("conflict_note"),
             missing_information=data.get("missing_information"),
         )
+        _answer_cache[cache_key] = result
+        return result
 
     def _answer_from_database(self, db: Session, question: str) -> AssistantAnswer:
         """Grounded factual answer retrieved directly from database records without external AI call."""
@@ -346,7 +369,7 @@ class HistoricalAssistantService:
 
         citations = _extract_citations(relevant)
 
-        return AssistantAnswer(
+        result = AssistantAnswer(
             question=question,
             answer=answer_text,
             historical_events=events_data[:8],
@@ -355,6 +378,9 @@ class HistoricalAssistantService:
             has_conflicts=bool(conflicts_found),
             conflict_note="; ".join(conflicts_found) if conflicts_found else None,
         )
+        cache_key = hashlib.md5(question.lower().strip().encode()).hexdigest()
+        _answer_cache[cache_key] = result
+        return result
 
 
 _assistant: Optional[HistoricalAssistantService] = None

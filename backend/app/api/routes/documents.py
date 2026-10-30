@@ -11,6 +11,7 @@ from app.db.database import get_db
 from app.models.models import Document, IngestionBatch, Event
 from app.schemas.schemas import DocumentResponse, DocumentListResponse, IngestionBatchResponse, DashboardStats
 from app.services.ingestion_service import ingest_document, IngestionError
+from app.services.historical_assistant import clear_answer_cache
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -100,6 +101,9 @@ async def upload_documents(
     batch.failed_files = failed
     batch.duplicate_files = duplicates
     db.commit()
+
+    # Clear assistant cache so new evidence is queried
+    clear_answer_cache()
 
     return results
 
@@ -228,6 +232,8 @@ def delete_document(document_id: str, db: Session = Depends(get_db)):
     except Exception as exc:
         logger.warning("Graph rebuild or conflict detection failed after document deletion: %s", exc)
 
+    clear_answer_cache()
+
     return {
         "status": "success",
         "message": f"Document '{doc_filename}' and its associated events deleted successfully.",
@@ -300,6 +306,7 @@ def load_sample_dataset(db: Session = Depends(get_db)):
     try:
         from seed_sample_data import seed
         seed()
+        clear_answer_cache()
         return {"message": "Synthetic sample dataset loaded successfully.", "status": "success"}
     except Exception as exc:
         logger.error("Failed to load sample dataset: %s", exc)
@@ -356,6 +363,8 @@ def reprocess_all_documents(db: Session = Depends(get_db)):
         detect_conflicts(db)
     except Exception as exc:
         logger.warning("Graph rebuild or conflict detection failed during reprocess: %s", exc)
+
+    clear_answer_cache()
 
     return {
         "status": "success",

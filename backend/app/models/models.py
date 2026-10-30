@@ -107,6 +107,7 @@ class Document(Base):
     ingestion_batch = relationship("IngestionBatch", back_populates="documents")
     events = relationship("Event", back_populates="source_document")
     evidence = relationship("EventEvidence", back_populates="document")
+    meeting_analysis = relationship("MeetingAnalysis", back_populates="document", cascade="all, delete-orphan")
 
 
 # ── Modules ───────────────────────────────────────────────────────────────────
@@ -317,4 +318,49 @@ class EventEvidence(Base):
 
     event = relationship("Event", back_populates="evidence")
     document = relationship("Document", back_populates="evidence")
+
+
+# ── Meeting Analysis ──────────────────────────────────────────────────────────
+
+class MeetingActionItem(Base):
+    """An action item extracted from a meeting transcript."""
+    __tablename__ = "meeting_action_items"
+
+    id = Column(String(36), primary_key=True, default=_uuid)
+    meeting_analysis_id = Column(String(36), ForeignKey("meeting_analyses.id"), nullable=False)
+    event_id = Column(String(36), ForeignKey("events.id"), nullable=True)
+
+    action = Column(Text, nullable=False)
+    owner = Column(String(255), nullable=True)
+    status = Column(String(20), default="OPEN")  # OPEN | COMPLETED | CANCELLED
+    deadline = Column(String(50), nullable=True)
+    supporting_text = Column(Text, nullable=True)
+
+    meeting_analysis = relationship("MeetingAnalysis", back_populates="action_items")
+    event = relationship("Event")
+
+
+class MeetingAnalysis(Base):
+    """Structured analysis of a meeting transcript document."""
+    __tablename__ = "meeting_analyses"
+
+    id = Column(String(36), primary_key=True, default=_uuid)
+    document_id = Column(String(36), ForeignKey("documents.id"), nullable=False)
+
+    meeting_title = Column(String(512), nullable=True)
+    meeting_date = Column(DateTime, nullable=True)
+    meeting_date_confidence = Column(String(20), default="UNKNOWN")
+    participants = Column(Text, nullable=True)   # JSON list of strings
+    topics = Column(Text, nullable=True)          # JSON list of strings
+    summary = Column(Text, nullable=True)
+    features = Column(Text, nullable=True)        # JSON list of strings
+    proposals = Column(Text, nullable=True)       # JSON list of dicts
+    decisions = Column(Text, nullable=True)       # JSON list of dicts
+    is_meeting = Column(Boolean, default=False)
+
+    created_at = Column(DateTime, default=_now, nullable=False)
+    updated_at = Column(DateTime, default=_now, onupdate=_now, nullable=False)
+
+    document = relationship("Document", back_populates="meeting_analysis")
+    action_items = relationship("MeetingActionItem", back_populates="meeting_analysis", cascade="all, delete-orphan")
 

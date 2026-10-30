@@ -1,6 +1,7 @@
 """Knowledge graph routes."""
 
-from fastapi import APIRouter, Depends
+from typing import Optional
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
@@ -10,12 +11,15 @@ router = APIRouter()
 
 
 @router.get("/")
-def get_graph(db: Session = Depends(get_db)):
-    """Return the full knowledge graph as React Flow-compatible JSON."""
+def get_graph(
+    feature_id: Optional[str] = Query(None, description="Optional feature ID to isolate its sub-graph"),
+    db: Session = Depends(get_db),
+):
+    """Return the knowledge graph as React Flow-compatible JSON, optionally filtered by feature."""
     graph = get_knowledge_graph()
     if graph._built_at is None:
         graph.build_from_db(db)
-    return graph.to_json_graph()
+    return graph.to_json_graph(feature_id=feature_id)
 
 
 @router.post("/rebuild")
