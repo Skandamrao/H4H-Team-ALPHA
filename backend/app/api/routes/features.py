@@ -35,11 +35,18 @@ def list_features(
     skip: int = 0,
     limit: int = 100,
     status: Optional[str] = Query(None),
+    has_events: Optional[bool] = Query(None, description="Filter features that have at least one event"),
     db: Session = Depends(get_db),
 ):
     query = db.query(Feature)
     if isinstance(status, str) and status:
         query = query.filter(Feature.current_status == status)
+    if has_events is True:
+        event_feat_ids = db.query(Event.feature_id).filter(Event.feature_id.isnot(None)).distinct()
+        query = query.filter(Feature.id.in_(event_feat_ids))
+    elif has_events is False:
+        event_feat_ids = db.query(Event.feature_id).filter(Event.feature_id.isnot(None)).distinct()
+        query = query.filter(~Feature.id.in_(event_feat_ids))
     total = query.count()
     features = query.order_by(Feature.canonical_name).offset(skip).limit(limit).all()
 

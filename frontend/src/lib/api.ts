@@ -157,8 +157,14 @@ export const uploadDocuments = (files: File[], projectId?: string, batchLabel?: 
   }).then(r => r.data)
 }
 
-export const getFeatures = (skip = 0, limit = 100) =>
-  api.get<{ total: number; features: Feature[] }>('/api/features/', { params: { skip, limit } }).then(r => r.data)
+export const getFeatures = (skip = 0, limit = 200, hasEvents?: boolean) =>
+  api.get<{ total: number; features: Feature[] }>('/api/features/', {
+    params: {
+      skip,
+      limit,
+      ...(hasEvents !== undefined ? { has_events: hasEvents } : {}),
+    },
+  }).then(r => r.data)
 
 export const getFeature = (id: string) =>
   api.get<Feature>(`/api/features/${id}`).then(r => r.data)
