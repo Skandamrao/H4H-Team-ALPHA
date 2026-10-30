@@ -38,6 +38,8 @@ import {
   Maximize2,
   FolderTree,
   Compass,
+  CheckCircle2,
+  CheckCircle,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
@@ -204,7 +206,10 @@ function CustomKnowledgeNode({ data }: { data: any }) {
             <span />
           )}
           {data.source_document_filename && (
-            <span className="truncate max-w-[110px] font-mono text-amber-300/80" title={data.source_document_filename}>
+            <span
+              className="truncate max-w-[110px] font-mono text-amber-300/80"
+              title={data.source_document_filename}
+            >
               {data.source_document_filename}
             </span>
           )}
@@ -439,7 +444,7 @@ function applyClusteredShelfLayout(
     rowCompsCount++
   })
 
-  // Place isolated nodes neatly below the connected graph in a grid
+  // Place isolated nodes neatly below the connected graph in a grid if any exist
   if (isolatedNodes.length > 0) {
     const isoStartY = connectedComps.length > 0 ? currentY + maxRowHeight + ROW_GAP * 1.4 : 0
     const ISO_COLS = 6
@@ -457,7 +462,7 @@ function applyClusteredShelfLayout(
 
 /**
  * 2. Module Swimlanes Layout
- * Groups features and events by Module into distinct vertical swimlanes.
+ * Groups features and events into distinct vertical swimlanes.
  */
 function applyModuleSwimlanesLayout(
   nodes: RawNode[],
@@ -475,7 +480,11 @@ function applyModuleSwimlanesLayout(
 
   const featEvents = new Map<string, RawNode[]>()
   edges.forEach((e) => {
-    if (e.relationship_type === 'FEATURE_HAS_EVENT') {
+    if (
+      e.relationship_type === 'FEATURE_HAS_EVENT' ||
+      e.relationship_type === 'DECISION_RELATES_TO' ||
+      e.relationship_type === 'EVENT_AFFECTS_FEATURE'
+    ) {
       const ev = nodes.find((n) => n.id === e.target)
       if (ev) {
         const list = featEvents.get(e.source) || []
@@ -489,20 +498,18 @@ function applyModuleSwimlanesLayout(
   const LANE_WIDTH = NODE_WIDTH + 60
   let laneIndex = 0
 
+  // 1. Lanes for modules that exist
   modules.forEach((mod) => {
     const modFeatures = features.filter(
       (f) => featToModule.get(f.id) === mod.id || f.module_name === mod.label
     )
 
-    // Lane X position
     const laneX = laneIndex * LANE_WIDTH
     let currentY = 0
 
-    // 1. Module at Top
     finalNodes.push(createFlowNode(mod, laneX, currentY, Position.Top, Position.Bottom))
     currentY += NODE_HEIGHT + 60
 
-    // 2. Features and their events
     modFeatures.forEach((feat) => {
       finalNodes.push(createFlowNode(feat, laneX, currentY, Position.Top, Position.Bottom))
       currentY += NODE_HEIGHT + 40
@@ -517,24 +524,30 @@ function applyModuleSwimlanesLayout(
     laneIndex++
   })
 
-  // Handle orphan features without modules
+  // 2. Handle active features without modules (place each active feature in its own column)
   const handledFeatureIds = new Set(finalNodes.map((n) => n.id))
   const unhandledFeatures = features.filter((f) => !handledFeatureIds.has(f.id))
-  if (unhandledFeatures.length > 0) {
-    const orphanLaneX = laneIndex * LANE_WIDTH
+  unhandledFeatures.forEach((feat) => {
+    const laneX = laneIndex * LANE_WIDTH
     let currentY = 0
-    unhandledFeatures.forEach((feat) => {
-      finalNodes.push(createFlowNode(feat, orphanLaneX, currentY, Position.Top, Position.Bottom))
-      currentY += NODE_HEIGHT + 30
+
+    finalNodes.push(createFlowNode(feat, laneX, currentY, Position.Top, Position.Bottom))
+    currentY += NODE_HEIGHT + 45
+
+    const evs = featEvents.get(feat.id) || []
+    evs.forEach((ev) => {
+      finalNodes.push(createFlowNode(ev, laneX, currentY, Position.Top, Position.Bottom))
+      currentY += NODE_HEIGHT + 35
     })
-  }
+    laneIndex++
+  })
 
   return { nodes: finalNodes, edges: formatEdges(edges) }
 }
 
 /**
  * 3. Concentric Radial Orbit Layout
- * Modules placed in inner circle, Features in middle orbit, Events/Decisions in outer orbit.
+ * Features arranged in inner orbit, Events/Decisions in outer orbit.
  */
 function applyConcentricOrbitLayout(
   nodes: RawNode[],
@@ -546,20 +559,22 @@ function applyConcentricOrbitLayout(
   const documents = nodes.filter((n) => n.node_type === 'document')
 
   const finalNodes: Node[] = []
-  const centerX = 1100
-  const centerY = 1100
+  const centerX = 1000
+  const centerY = 1000
 
-  // 1. Modules at Radius = 240
-  const R_MODULE = Math.max(220, modules.length * 40)
-  modules.forEach((m, i) => {
-    const angle = (2 * Math.PI * i) / (modules.length || 1)
-    const x = centerX + R_MODULE * Math.cos(angle) - NODE_WIDTH / 2
-    const y = centerY + R_MODULE * Math.sin(angle) - NODE_HEIGHT / 2
-    finalNodes.push(createFlowNode(m, x, y, Position.Top, Position.Bottom))
-  })
+  // 1. Modules at Radius = 240 (if modules present)
+  if (modules.length > 0) {
+    const R_MODULE = Math.max(220, modules.length * 40)
+    modules.forEach((m, i) => {
+      const angle = (2 * Math.PI * i) / (modules.length || 1)
+      const x = centerX + R_MODULE * Math.cos(angle) - NODE_WIDTH / 2
+      const y = centerY + R_MODULE * Math.sin(angle) - NODE_HEIGHT / 2
+      finalNodes.push(createFlowNode(m, x, y, Position.Top, Position.Bottom))
+    })
+  }
 
-  // 2. Features at Radius = 560
-  const R_FEATURE = Math.max(520, features.length * 12)
+  // 2. Features at Radius = 440
+  const R_FEATURE = Math.max(modules.length > 0 ? 520 : 360, features.length * 18)
   features.forEach((f, i) => {
     const angle = (2 * Math.PI * i) / (features.length || 1)
     const x = centerX + R_FEATURE * Math.cos(angle) - NODE_WIDTH / 2
@@ -567,8 +582,8 @@ function applyConcentricOrbitLayout(
     finalNodes.push(createFlowNode(f, x, y, Position.Top, Position.Bottom))
   })
 
-  // 3. Events & Decisions at Radius = 880
-  const R_EVENT = Math.max(860, events.length * 25)
+  // 3. Events & Decisions at Radius = 780
+  const R_EVENT = Math.max(R_FEATURE + 320, events.length * 28)
   events.forEach((e, i) => {
     const angle = (2 * Math.PI * i) / (events.length || 1)
     const x = centerX + R_EVENT * Math.cos(angle) - NODE_WIDTH / 2
@@ -576,14 +591,16 @@ function applyConcentricOrbitLayout(
     finalNodes.push(createFlowNode(e, x, y, Position.Top, Position.Bottom))
   })
 
-  // 4. Documents at Radius = 1180
-  const R_DOC = Math.max(1180, documents.length * 35)
-  documents.forEach((d, i) => {
-    const angle = (2 * Math.PI * i) / (documents.length || 1)
-    const x = centerX + R_DOC * Math.cos(angle) - NODE_WIDTH / 2
-    const y = centerY + R_DOC * Math.sin(angle) - NODE_HEIGHT / 2
-    finalNodes.push(createFlowNode(d, x, y, Position.Top, Position.Bottom))
-  })
+  // 4. Documents at Radius = 1100
+  if (documents.length > 0) {
+    const R_DOC = Math.max(R_EVENT + 320, documents.length * 35)
+    documents.forEach((d, i) => {
+      const angle = (2 * Math.PI * i) / (documents.length || 1)
+      const x = centerX + R_DOC * Math.cos(angle) - NODE_WIDTH / 2
+      const y = centerY + R_DOC * Math.sin(angle) - NODE_HEIGHT / 2
+      finalNodes.push(createFlowNode(d, x, y, Position.Top, Position.Bottom))
+    })
+  }
 
   return { nodes: finalNodes, edges: formatEdges(edges) }
 }
@@ -687,9 +704,9 @@ export default function KnowledgeGraphPage() {
   // Layout method switcher
   const [layoutStructure, setLayoutStructure] = useState<LayoutStructure>('clusters')
 
-  // Filters
+  // Filters: onlyWithEvents is TRUE by default to hide entities with 0 events
+  const [onlyWithEvents, setOnlyWithEvents] = useState<boolean>(true)
   const [showDocuments, setShowDocuments] = useState<boolean>(false)
-  const [showIsolated, setShowIsolated] = useState<boolean>(false)
   const [nodeSearch, setNodeSearch] = useState<string>('')
   const [selectedNode, setSelectedNode] = useState<RawNode | null>(null)
 
@@ -710,8 +727,8 @@ export default function KnowledgeGraphPage() {
     refetch,
     isRefetching,
   } = useQuery({
-    queryKey: ['knowledge-graph', currentFeatureFilter],
-    queryFn: () => getKnowledgeGraph(currentFeatureFilter || undefined),
+    queryKey: ['knowledge-graph', currentFeatureFilter, onlyWithEvents],
+    queryFn: () => getKnowledgeGraph(currentFeatureFilter || undefined, onlyWithEvents),
   })
 
   const rebuildMutation = useMutation({
@@ -719,21 +736,70 @@ export default function KnowledgeGraphPage() {
     onSuccess: () => refetch(),
   })
 
-  // Filter raw graph data based on user controls
+  // Filter raw graph data based on user controls: IF NO EVENTS, DON'T SHOW
   const filteredData = useMemo(() => {
     if (!graphData || !(graphData as any).nodes) return { nodes: [], edges: [] }
     const raw = graphData as { nodes: RawNode[]; edges: RawEdge[] }
 
+    // 1. Identify all event and decision nodes
+    const eventNodeIds = new Set(
+      raw.nodes
+        .filter((n) => n.node_type === 'event' || n.node_type === 'decision')
+        .map((n) => n.id)
+    )
+
+    // 2. Identify all features that actually have events
+    const featuresWithEvents = new Set<string>()
+    raw.edges.forEach((e) => {
+      if (
+        e.relationship_type === 'FEATURE_HAS_EVENT' ||
+        e.relationship_type === 'DECISION_RELATES_TO' ||
+        e.relationship_type === 'EVENT_AFFECTS_FEATURE'
+      ) {
+        if (eventNodeIds.has(e.target) && e.source.startsWith('feature:')) {
+          featuresWithEvents.add(e.source)
+        }
+        if (eventNodeIds.has(e.source) && e.target.startsWith('feature:')) {
+          featuresWithEvents.add(e.target)
+        }
+      }
+    })
+
+    // 3. Identify modules that contain features with events
+    const modulesWithEvents = new Set<string>()
+    raw.edges.forEach((e) => {
+      if (e.relationship_type === 'MODULE_CONTAINS_FEATURE') {
+        if (featuresWithEvents.has(e.target) && e.source.startsWith('module:')) {
+          modulesWithEvents.add(e.source)
+        }
+      }
+    })
+
+    // 4. Identify documents connected to those events
+    const documentsWithEvents = new Set<string>()
+    raw.edges.forEach((e) => {
+      if (e.relationship_type === 'EVENT_SUPPORTED_BY') {
+        if (eventNodeIds.has(e.source) && e.target.startsWith('document:')) {
+          documentsWithEvents.add(e.target)
+        }
+      }
+    })
+
     let nList = raw.nodes || []
 
-    // Filter document leaf nodes if unchecked
-    if (!showDocuments) {
-      nList = nList.filter((n) => n.node_type !== 'document')
-    }
-
-    // Filter isolated / 0-degree features if unchecked
-    if (!showIsolated && !currentFeatureFilter) {
-      nList = nList.filter((n) => !n.is_isolated || n.node_type === 'module')
+    // If onlyWithEvents is TRUE (default): Strictly exclude entities with 0 events!
+    if (onlyWithEvents) {
+      nList = nList.filter((n) => {
+        if (n.node_type === 'event' || n.node_type === 'decision') return true
+        if (n.node_type === 'feature') return featuresWithEvents.has(n.id)
+        if (n.node_type === 'module') return modulesWithEvents.has(n.id)
+        if (n.node_type === 'document') return showDocuments && documentsWithEvents.has(n.id)
+        return false
+      })
+    } else {
+      if (!showDocuments) {
+        nList = nList.filter((n) => n.node_type !== 'document')
+      }
     }
 
     // Filter by text search if provided
@@ -750,7 +816,7 @@ export default function KnowledgeGraphPage() {
     )
 
     return { nodes: nList, edges: eList }
-  }, [graphData, showDocuments, showIsolated, currentFeatureFilter, nodeSearch])
+  }, [graphData, showDocuments, onlyWithEvents, nodeSearch])
 
   // Apply chosen layout algorithm
   useEffect(() => {
@@ -810,7 +876,7 @@ export default function KnowledgeGraphPage() {
     reactFlowInstance.current?.fitView({ padding: 0.18, duration: 500 })
   }
 
-  // Grouped structure for the Structural Explorer view
+  // Grouped structure for the Structural Explorer view (Only showing entities with events)
   const structuredHierarchy = useMemo(() => {
     if (!graphData || !(graphData as any).nodes) return []
     const raw = graphData as { nodes: RawNode[]; edges: RawEdge[] }
@@ -829,7 +895,11 @@ export default function KnowledgeGraphPage() {
     // Map events to features
     const featEvents = new Map<string, RawNode[]>()
     raw.edges.forEach((e) => {
-      if (e.relationship_type === 'FEATURE_HAS_EVENT') {
+      if (
+        e.relationship_type === 'FEATURE_HAS_EVENT' ||
+        e.relationship_type === 'DECISION_RELATES_TO' ||
+        e.relationship_type === 'EVENT_AFFECTS_FEATURE'
+      ) {
         const evNode = raw.nodes.find((n) => n.id === e.target)
         if (evNode) {
           const list = featEvents.get(e.source) || []
@@ -839,18 +909,51 @@ export default function KnowledgeGraphPage() {
       }
     })
 
-    return modules.map((mod) => {
+    const groups: {
+      id: string
+      groupTitle: string
+      groupType: 'module' | 'core'
+      features: { feature: RawNode; events: RawNode[] }[]
+    }[] = []
+
+    // 1. Process standard modules: ONLY keep if they have active features with events
+    modules.forEach((mod) => {
       const modFeatures = features.filter(
         (f) => featToModule.get(f.id) === mod.id || f.module_name === mod.label
       )
-      return {
-        module: mod,
-        features: modFeatures.map((f) => ({
-          feature: f,
-          events: featEvents.get(f.id) || [],
-        })),
+      const activeFeatures = modFeatures
+        .map((f) => ({ feature: f, events: featEvents.get(f.id) || [] }))
+        .filter((item) => item.events.length > 0)
+
+      if (activeFeatures.length > 0) {
+        groups.push({
+          id: mod.id,
+          groupTitle: mod.label,
+          groupType: 'module',
+          features: activeFeatures,
+        })
       }
     })
+
+    // 2. Process features with events that have no module assigned
+    const handledFeatureIds = new Set(
+      groups.flatMap((g) => g.features.map((f) => f.feature.id))
+    )
+    const unhandledWithEvents = features
+      .filter((f) => !handledFeatureIds.has(f.id))
+      .map((f) => ({ feature: f, events: featEvents.get(f.id) || [] }))
+      .filter((item) => item.events.length > 0)
+
+    if (unhandledWithEvents.length > 0) {
+      groups.push({
+        id: 'core-active-features',
+        groupTitle: 'Active Feature Milestones & Decisions',
+        groupType: 'core',
+        features: unhandledWithEvents,
+      })
+    }
+
+    return groups
   }, [graphData])
 
   return (
@@ -930,7 +1033,7 @@ export default function KnowledgeGraphPage() {
               )}
             </div>
 
-            {/* Feature Focus Filter */}
+            {/* Feature Focus Filter - only showing features that have events */}
             <div className="flex items-center gap-1.5 bg-slate-900/70 border border-slate-700/60 rounded-lg px-2.5 py-1.5 text-slate-300">
               <Filter size={13} className="text-purple-400" />
               <span className="text-slate-400 font-medium">Focus:</span>
@@ -940,13 +1043,15 @@ export default function KnowledgeGraphPage() {
                 className="bg-transparent text-slate-200 text-xs focus:outline-none cursor-pointer max-w-[170px] truncate"
               >
                 <option value="" className="bg-[#0d1530] text-slate-200">
-                  All Features (Global View)
+                  All Active Features
                 </option>
-                {featuresData?.features.map((f) => (
-                  <option key={f.id} value={f.id} className="bg-[#0d1530] text-slate-200">
-                    {f.canonical_name} ({f.event_count})
-                  </option>
-                ))}
+                {featuresData?.features
+                  .filter((f) => !onlyWithEvents || f.event_count > 0)
+                  .map((f) => (
+                    <option key={f.id} value={f.id} className="bg-[#0d1530] text-slate-200">
+                      {f.canonical_name} ({f.event_count} events)
+                    </option>
+                  ))}
               </select>
             </div>
 
@@ -996,24 +1101,34 @@ export default function KnowledgeGraphPage() {
               <span>{showDocuments ? 'Documents Visible' : 'Hide Documents'}</span>
             </button>
 
-            {/* Toggle Show Isolated Entities */}
+            {/* Filter Toggle: Only Features With Events (active by default) */}
             <button
-              onClick={() => setShowIsolated((v) => !v)}
-              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border transition-colors ${
-                showIsolated
-                  ? 'bg-purple-600/20 text-purple-300 border-purple-500/40'
+              onClick={() => setOnlyWithEvents((v) => !v)}
+              className={cn(
+                'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-colors',
+                onlyWithEvents
+                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 shadow-sm'
                   : 'bg-slate-900/70 text-slate-400 border-slate-700/60 hover:text-slate-200'
-              }`}
-              title="Toggle orphan features with no events"
+              )}
+              title={
+                onlyWithEvents
+                  ? 'Showing strictly entities with events. Click to include 0-event features.'
+                  : 'Showing all entities. Click to show only features with events.'
+              }
             >
-              <span>{showIsolated ? 'All 246 Entities' : 'Active Connected Graph'}</span>
+              <CheckCircle2
+                size={13}
+                className={onlyWithEvents ? 'text-emerald-400' : 'text-slate-500'}
+              />
+              <span>{onlyWithEvents ? 'Only Features With Events' : 'All Entities (Inc. 0 Events)'}</span>
             </button>
           </div>
 
           {/* Right Stats & Fit-view Button */}
           <div className="flex items-center gap-3">
             <span className="text-slate-400 font-mono text-[11px]">
-              {nodes.length} Visible Nodes • {edges.length} Edges
+              {nodes.length} Visible Nodes ({onlyWithEvents ? 'Only With Events' : 'All Entities'}) •{' '}
+              {edges.length} Edges
             </span>
             {activeView === 'canvas' && (
               <button
@@ -1045,60 +1160,69 @@ export default function KnowledgeGraphPage() {
                   Product Architecture & Historical Matrix
                 </h3>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  Complete breakdown of modules, canonical features, and their sequential lifecycle events
+                  Showing active features with recorded sequential lifecycle events and decisions
                 </p>
               </div>
-              <span className="text-xs font-mono text-purple-400 bg-purple-950/40 px-3 py-1 rounded-lg border border-purple-800/40">
-                {structuredHierarchy.length} Modules Identified
+              <span className="text-xs font-mono text-emerald-400 bg-emerald-950/40 px-3 py-1 rounded-lg border border-emerald-800/40 flex items-center gap-1.5">
+                <CheckCircle size={12} />
+                {structuredHierarchy.reduce((acc, g) => acc + g.features.length, 0)} Active Features With Events
               </span>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-              {structuredHierarchy.map((group) => (
-                <div
-                  key={group.module.id}
-                  className="rounded-xl border border-blue-900/30 bg-[#0d1636]/90 p-5 space-y-4 shadow-lg backdrop-blur-md"
-                >
-                  <div className="flex items-center justify-between border-b border-blue-900/40 pb-3">
-                    <div className="flex items-center gap-2">
-                      <div className="p-1.5 rounded-lg bg-blue-600/20 text-blue-300 border border-blue-500/30">
-                        <Boxes size={16} />
-                      </div>
-                      <h4 className="text-sm font-bold text-white tracking-wide">
-                        {group.module.label}
-                      </h4>
-                    </div>
-                    <span className="text-[11px] font-mono text-slate-400">
-                      {group.features.length} features
-                    </span>
-                  </div>
-
-                  <div className="space-y-3">
-                    {group.features.map((item) => (
-                      <div
-                        key={item.feature.id}
-                        className="rounded-lg bg-slate-900/60 border border-slate-800/80 p-3 space-y-2 hover:border-purple-500/40 transition-colors"
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-semibold text-purple-200">
-                            {item.feature.label}
-                          </span>
-                          <button
-                            onClick={() =>
-                              navigate(
-                                `/timeline?featureId=${
-                                  item.feature.feature_id || item.feature.id.replace('feature:', '')
-                                }`
-                              )
-                            }
-                            className="text-[10px] text-purple-400 hover:text-purple-300 flex items-center gap-1 font-medium"
-                          >
-                            <ExternalLink size={10} />
-                            Timeline
-                          </button>
+            {structuredHierarchy.length === 0 ? (
+              <div className="py-12 text-center text-slate-500">
+                <Info size={32} className="mx-auto mb-2 opacity-40 text-purple-400" />
+                <div className="text-slate-300 font-medium">No Features with Events Found</div>
+                <div className="text-xs text-slate-500 mt-1">
+                  Upload project documents to record events and populate the knowledge graph.
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                {structuredHierarchy.map((group) => (
+                  <div
+                    key={group.id}
+                    className="rounded-xl border border-blue-900/30 bg-[#0d1636]/90 p-5 space-y-4 shadow-lg backdrop-blur-md"
+                  >
+                    <div className="flex items-center justify-between border-b border-blue-900/40 pb-3">
+                      <div className="flex items-center gap-2">
+                        <div className="p-1.5 rounded-lg bg-blue-600/20 text-blue-300 border border-blue-500/30">
+                          <Boxes size={16} />
                         </div>
+                        <h4 className="text-sm font-bold text-white tracking-wide">
+                          {group.groupTitle}
+                        </h4>
+                      </div>
+                      <span className="text-[11px] font-mono text-slate-400">
+                        {group.features.length} active features
+                      </span>
+                    </div>
 
-                        {item.events.length > 0 ? (
+                    <div className="space-y-3">
+                      {group.features.map((item) => (
+                        <div
+                          key={item.feature.id}
+                          className="rounded-lg bg-slate-900/60 border border-slate-800/80 p-3 space-y-2 hover:border-purple-500/40 transition-colors"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-semibold text-purple-200">
+                              {item.feature.label}
+                            </span>
+                            <button
+                              onClick={() =>
+                                navigate(
+                                  `/timeline?featureId=${
+                                    item.feature.feature_id || item.feature.id.replace('feature:', '')
+                                  }`
+                                )
+                              }
+                              className="text-[10px] text-purple-400 hover:text-purple-300 flex items-center gap-1 font-medium"
+                            >
+                              <ExternalLink size={10} />
+                              Timeline
+                            </button>
+                          </div>
+
                           <div className="space-y-1.5 pt-1">
                             {item.events.map((ev, i) => (
                               <div
@@ -1109,20 +1233,21 @@ export default function KnowledgeGraphPage() {
                                   {ev.decision_status || ev.node_type}
                                 </span>
                                 <span className="truncate">{ev.label}</span>
+                                {ev.event_date && (
+                                  <span className="ml-auto text-[10px] text-slate-500 font-mono flex-shrink-0">
+                                    {ev.event_date}
+                                  </span>
+                                )}
                               </div>
                             ))}
                           </div>
-                        ) : (
-                          <div className="text-[11px] text-slate-500 italic">
-                            Initial feature record
-                          </div>
-                        )}
-                      </div>
-                    ))}
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         ) : nodes.length === 0 ? (
           /* Empty State */
@@ -1133,7 +1258,7 @@ export default function KnowledgeGraphPage() {
               <div className="text-xs text-slate-500 mt-1">
                 {currentFeatureFilter
                   ? 'No events or relationships found for this feature.'
-                  : 'Upload project documents to build the temporal knowledge graph.'}
+                  : 'No features with events found. Upload project documents to build the temporal knowledge graph.'}
               </div>
             </div>
           </div>

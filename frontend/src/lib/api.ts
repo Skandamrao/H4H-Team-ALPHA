@@ -169,8 +169,13 @@ export const getEvents = (params?: Record<string, string | boolean>) =>
 export const getFeatureTimeline = (featureId: string, toDate?: string) =>
   api.get<Timeline>(`/api/timeline/${featureId}`, { params: toDate ? { to_date: toDate } : undefined }).then(r => r.data)
 
-export const getKnowledgeGraph = (featureId?: string) =>
-  api.get('/api/graph/', { params: featureId ? { feature_id: featureId } : undefined }).then(r => r.data)
+export const getKnowledgeGraph = (featureId?: string, onlyWithEvents?: boolean) =>
+  api.get('/api/graph/', {
+    params: {
+      ...(featureId ? { feature_id: featureId } : {}),
+      ...(onlyWithEvents !== undefined ? { only_with_events: onlyWithEvents } : {}),
+    },
+  }).then(r => r.data)
 
 export const rebuildGraph = () =>
   api.post('/api/graph/rebuild').then(r => r.data)

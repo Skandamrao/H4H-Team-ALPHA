@@ -13,13 +13,14 @@ router = APIRouter()
 @router.get("/")
 def get_graph(
     feature_id: Optional[str] = Query(None, description="Optional feature ID to isolate its sub-graph"),
+    only_with_events: bool = Query(False, description="Filter only nodes that have events"),
     db: Session = Depends(get_db),
 ):
     """Return the knowledge graph as React Flow-compatible JSON, optionally filtered by feature."""
     graph = get_knowledge_graph()
     if graph._built_at is None:
         graph.build_from_db(db)
-    return graph.to_json_graph(feature_id=feature_id)
+    return graph.to_json_graph(feature_id=feature_id, only_with_events=only_with_events)
 
 
 @router.post("/rebuild")

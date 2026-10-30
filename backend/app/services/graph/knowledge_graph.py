@@ -163,10 +163,16 @@ class TemporalKnowledgeGraph:
                     related.add(self.graph.nodes[node]["event_id"])
         return list(related)
 
-    def to_json_graph(self, limit_nodes: int = 400, feature_id: Optional[str] = None) -> Dict[str, Any]:
+    def to_json_graph(
+        self,
+        limit_nodes: int = 400,
+        feature_id: Optional[str] = None,
+        only_with_events: bool = False,
+    ) -> Dict[str, Any]:
         """
         Serialise the graph to a React Flow-compatible JSON structure.
         Optionally isolates the subgraph for a specific *feature_id*.
+        When *only_with_events* is True, excludes features and modules with 0 events.
         """
         nodes = []
         edges = []
@@ -203,6 +209,50 @@ class TemporalKnowledgeGraph:
                         edges.append({"source": src, "target": dst, **data})
 
                 return {"nodes": nodes, "edges": edges, "filtered_feature_id": feature_id}
+
+        if only_with_events:
+            # Filter strictly for entities that have events
+            event_nodes = {
+                nid for nid, d in self.graph.nodes(data=True)
+                if d.get("node_type") in ("event", "decision")
+            }
+            features_with_events = set()
+            for en in event_nodes:
+                for pred in self.graph.predecessors(en):
+                    if self.graph.nodes[pred].get("node_type") == "feature":
+                        features_with_events.add(pred)
+                for succ in self.graph.successors(en):
+                    if self.graph.nodes[succ].get("node_type") == "feature":
+                        features_with_events.add(succ)
+
+            modules_with_events = set()
+            for fn in features_with_events:
+                for pred in self.graph.predecessors(fn):
+                    if self.graph.nodes[pred].get("node_type") == "module":
+                        modules_with_events.add(pred)
+
+            docs_with_events = set()
+            for en in event_nodes:
+                for succ in self.graph.successors(en):
+                    if self.graph.nodes[succ].get("node_type") == "document":
+                        docs_with_events.add(succ)
+
+            included = event_nodes | features_with_events | modules_with_events | docs_with_events
+            for nid in included:
+                data = self.graph.nodes[nid]
+                nodes.append({
+                    "id": nid,
+                    "label": data.get("label", nid),
+                    "degree": self.graph.degree(nid),
+                    "is_isolated": False,
+                    **data,
+                })
+
+            for src, dst, data in self.graph.edges(data=True):
+                if src in included and dst in included:
+                    edges.append({"source": src, "target": dst, **data})
+
+            return {"nodes": nodes, "edges": edges, "filtered_feature_id": None}
 
         # Global graph view: Prioritize connected nodes with active relationships
         all_nodes = list(self.graph.nodes(data=True))
