@@ -274,6 +274,8 @@ async def _ingest_single_record(
             event_date_basis=ev_create.event_date_basis,
             source_id=source.id,
             evidence_excerpt=ev_create.evidence_excerpt,
+            evidence_offset_start=ev_create.evidence_offset_start,
+            evidence_offset_end=ev_create.evidence_offset_end,
             actor=ev_create.actor,
             related_event_ids=ev_create.related_event_ids,
             extraction_confidence=ev_create.extraction_confidence,

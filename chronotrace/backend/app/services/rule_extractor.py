@@ -159,12 +159,27 @@ def extract_rule_based_events(
     for line in lines:
         lower = line.lower()
 
+        # Check for dialogue speaker prefix (e.g. "Jennifer Miles:", "Meeting Chairman (Mark):")
+        speaker_match = re.match(r"^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?(?:\s+\([^)]+\))?):\s*(.*)$", line)
+        line_speaker = speaker_match.group(1).strip() if speaker_match else None
+        active_line_actor = line_speaker or doc_global_actor
+
         # Update section context
-        if line.startswith("#") or re.match(r"^\d+\.\s+", line):
+        if line.startswith("#"):
             in_dependencies_section = "dependenc" in lower
             heading_text = re.sub(r"^[#\d\.\s]+", "", line).strip()
-            # If section looks like a feature name
-            if len(heading_text) > 3 and not any(k in lower for k in ["agenda", "attendees", "action items", "context", "decision", "reasons", "consequences", "notes", "related"]):
+            if len(heading_text) > 3 and not any(
+                k in lower for k in ["agenda", "attendees", "action items", "context", "decision", "reasons", "consequences", "notes", "related", "shipped", "not shipped"]
+            ):
+                current_section_feature = _clean_feature_name(heading_text, title)
+            continue
+
+        if re.match(r"^\d+\.\s+", line):
+            in_dependencies_section = "dependenc" in lower
+            heading_text = re.sub(r"^[#\d\.\s]+", "", line).strip()
+            if len(heading_text) > 3 and not any(
+                k in lower for k in ["agenda", "attendees", "action items", "context", "decision", "reasons", "consequences", "notes", "related"]
+            ):
                 current_section_feature = _clean_feature_name(heading_text, title)
 
         # -------------------------------------------------------------------
@@ -362,7 +377,8 @@ def extract_rule_based_events(
             "proposal accepted" in lower or
             "decision: proposal accepted" in lower or
             "decision: accepted" in lower or
-            "agreed to proceed" in lower
+            "agreed to proceed" in lower or
+            "move forward with" in lower
         )
         is_negated_approval = any(kw in lower for kw in [
             "no decision made", "still not approved", "not approved yet",
@@ -372,13 +388,16 @@ def extract_rule_based_events(
 
         if is_approval_indicator and not is_negated_approval:
             feat = current_section_feature or title or "Feature"
-            m = re.search(r"([A-Za-z0-9\s\-]+)\s+(?:is|was)?\s*approved", line, re.I)
+            m = (
+                re.search(r"([A-Za-z0-9\s\-]+)\s+(?:is|was)?\s*approved", line, re.I) or
+                re.search(r"move forward with (?:the\s+)?([A-Za-z0-9\s\-]+?)(?:\s+first|\.|$)", line, re.I)
+            )
             if m:
                 feat = m.group(1).strip()
             feat = _clean_feature_name(feat, current_section_feature or title)
 
             line_date, line_prec, line_basis, line_raw = _extract_date_for_line(line, doc_date, doc_prec, doc_basis)
-            actor = _extract_actor_from_text(line, doc_global_actor)
+            actor = _extract_actor_from_text(line, active_line_actor)
 
             events.append(TemporalEventCreate(
                 project_id=project_id,
@@ -400,39 +419,43 @@ def extract_rule_based_events(
         # -------------------------------------------------------------------
         # 7. PROPOSED patterns (Rule B: proposals are not approvals)
         # -------------------------------------------------------------------
-        if any(kw in lower for kw in ["proposed", "proposal", "suggested adding", "is now proposed", "pitch", "suggested"]):
-            # Guard against lines that are already approvals or rejections
-            if not is_approval_indicator and "rejected" not in lower:
-                feat = current_section_feature or title or "Feature"
-                m = (
-                    re.search(r"suggested adding\s+([^to\n\.]+)", line, re.I) or
-                    re.search(r"proposed adding\s+([^to\n\.]+)", line, re.I) or
-                    re.search(r"proposed\s+([^to\n\.]+)", line, re.I) or
-                    re.search(r"proposal (?:was made )?to add\s+([^to\n\.]+)", line, re.I)
-                )
-                if m:
-                    feat = m.group(1).strip()
-                feat = _clean_feature_name(feat, current_section_feature or title)
+        is_prop_indicator = any(kw in lower for kw in [
+            "proposed", "proposal", "suggested adding", "is now proposed",
+            "pitch", "suggested", "introducing", "comes to mind is"
+        ])
+        if is_prop_indicator and not is_approval_indicator and "rejected" not in lower:
+            feat = current_section_feature or title or "Feature"
+            m = (
+                re.search(r"suggested adding\s+([^to\n\.]+)", line, re.I) or
+                re.search(r"proposed adding\s+([^to\n\.]+)", line, re.I) or
+                re.search(r"proposed\s+([^to\n\.]+)", line, re.I) or
+                re.search(r"proposal (?:was made )?to add\s+([^to\n\.]+)", line, re.I) or
+                re.search(r"(?:introducing|implementing|exploring)\s+(?:an?\s+)?([A-Za-z0-9\s\-]+?)(?:\s+for|\s+to|\.|$)", line, re.I) or
+                re.search(r"comes to mind is\s+([A-Za-z0-9\s\-]+?)(?:\.|\s+Right|$)", line, re.I)
+            )
+            if m:
+                feat = m.group(1).strip()
+            feat = _clean_feature_name(feat, current_section_feature or title)
 
-                line_date, line_prec, line_basis, line_raw = _extract_date_for_line(line, doc_date, doc_prec, doc_basis)
-                actor = _extract_actor_from_text(line, None)
+            line_date, line_prec, line_basis, line_raw = _extract_date_for_line(line, doc_date, doc_prec, doc_basis)
+            actor = _extract_actor_from_text(line, active_line_actor)
 
-                events.append(TemporalEventCreate(
-                    project_id=project_id,
-                    unresolved_feature_mention=feat,
-                    event_type="PROPOSED",
-                    description=line,
-                    event_date=line_date,
-                    event_date_raw=line_raw or source_date_raw,
-                    event_date_precision=line_prec,
-                    event_date_basis=line_basis,
-                    source_id=source_id,
-                    evidence_excerpt=line,
-                    actor=actor,
-                    extraction_confidence=0.85,
-                    needs_review=(line_date is None),
-                ))
-                continue
+            events.append(TemporalEventCreate(
+                project_id=project_id,
+                unresolved_feature_mention=feat,
+                event_type="PROPOSED",
+                description=line,
+                event_date=line_date,
+                event_date_raw=line_raw or source_date_raw,
+                event_date_precision=line_prec,
+                event_date_basis=line_basis,
+                source_id=source_id,
+                evidence_excerpt=line,
+                actor=actor,
+                extraction_confidence=0.85,
+                needs_review=(line_date is None),
+            ))
+            continue
 
         # -------------------------------------------------------------------
         # 8. MODIFIED patterns (Scope adjustments, revisions, in-progress shifts)

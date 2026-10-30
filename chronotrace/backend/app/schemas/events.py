@@ -66,6 +66,8 @@ class TemporalEventOut(BaseModel):
     # Rule H — provenance
     source_id: str
     evidence_excerpt: str
+    evidence_offset_start: Optional[int] = None
+    evidence_offset_end: Optional[int] = None
     actor: Optional[str] = None
     related_event_ids: list[str] = Field(default_factory=list)
 
@@ -93,6 +95,8 @@ class TemporalEventCreate(BaseModel):
     event_date_basis: DATE_BASIS = "unknown"
     source_id: str
     evidence_excerpt: str
+    evidence_offset_start: Optional[int] = None
+    evidence_offset_end: Optional[int] = None
     actor: Optional[str] = None
     related_event_ids: list[str] = Field(default_factory=list)
     extraction_confidence: Optional[float] = None

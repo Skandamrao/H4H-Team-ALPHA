@@ -22,7 +22,7 @@ import uuid
 from datetime import date
 
 from app.schemas.events import TemporalEventCreate
-from app.services.extraction_service import extract_events_from_record
+from app.services.extraction_service import extract_events_from_record, EventExtractor
 from app.services.rule_extractor import extract_rule_based_events
 
 
@@ -381,3 +381,126 @@ async def test_13_multi_event_meeting_record_extraction():
 
     # Rule A: No event from this meeting can be IMPLEMENTED
     assert "IMPLEMENTED" not in types
+
+
+# ---------------------------------------------------------------------------
+# Test 14: Evidence Offset Retention (Requirement F)
+# ---------------------------------------------------------------------------
+@pytest.mark.anyio
+async def test_14_evidence_offset_retention():
+    content = "Sprint Planning: Dev Patel suggested adding CSV export functionality to reports."
+    events = await extract_events_from_record(
+        project_id="proj-p05",
+        source_id="src-14",
+        record_type="meeting_notes",
+        title="Sprint Planning",
+        source_date=date(2024, 1, 10),
+        source_date_raw="January 10, 2024",
+        content=content,
+    )
+    assert len(events) >= 1
+    ev = events[0]
+    assert ev.evidence_offset_start is not None
+    assert ev.evidence_offset_end is not None
+    assert content[ev.evidence_offset_start:ev.evidence_offset_end] == ev.evidence_excerpt.strip()
+
+
+# ---------------------------------------------------------------------------
+# Test 15: Paraphrase Flagged as Needs Review (Requirement F)
+# ---------------------------------------------------------------------------
+def test_15_paraphrase_flagged_as_needs_review():
+    content = "Team discussed adding CSV export."
+    paraphrase = "The entire group agreed that exporting to CSV should be introduced immediately."
+    is_verbatim, start, end = EventExtractor.verify_evidence(content, paraphrase)
+    assert is_verbatim is False
+    assert start is None
+    assert end is None
+
+
+# ---------------------------------------------------------------------------
+# Test 16: Controlled 1-Shot Self-Correction (Requirement E)
+# ---------------------------------------------------------------------------
+@pytest.mark.anyio
+async def test_16_controlled_1shot_self_correction():
+    from app.services.llm_provider import BaseLLMProvider
+
+    class MockSelfCorrectionProvider(BaseLLMProvider):
+        def __init__(self):
+            self.attempts = 0
+
+        async def complete(self, system_prompt: str, user_prompt: str) -> str:
+            return ""
+
+        async def complete_json(self, system_prompt: str, user_prompt: str):
+            self.attempts += 1
+            if self.attempts == 1:
+                # First attempt fails: invalid non-list payload
+                raise ValueError("Unexpected JSON format: missing closing bracket")
+            # Second attempt (correction) returns valid structured output
+            return [
+                {
+                    "feature_mention": "OAuth2 Social Login",
+                    "event_type": "APPROVED",
+                    "description": "OAuth2 approved for sprint 3",
+                    "previous_name": None,
+                    "new_name": None,
+                    "event_date_raw": "January 10, 2024",
+                    "event_date_iso": "2024-01-10",
+                    "event_date_precision": "exact",
+                    "evidence_excerpt": "Decision: proposal accepted for Sprint 3",
+                    "actor": "Ravi Kumar",
+                    "extraction_confidence": 0.95,
+                }
+            ]
+
+    mock_prov = MockSelfCorrectionProvider()
+    extractor = EventExtractor(provider=mock_prov)
+    content = "Sprint Notes: Decision: proposal accepted for Sprint 3"
+    events = await extractor.extract_events(
+        project_id="proj-p05",
+        source_id="src-16",
+        record_type="meeting_notes",
+        title="Sprint Notes",
+        source_date=date(2024, 1, 10),
+        source_date_raw="January 10, 2024",
+        content=content,
+    )
+    assert mock_prov.attempts == 2  # Exactly 1 initial + 1 correction attempt
+    assert len(events) == 1
+    assert events[0].event_type == "APPROVED"
+    assert events[0].unresolved_feature_mention == "OAuth2 Social Login"
+
+
+# ---------------------------------------------------------------------------
+# Test 17: Contradictory Source Records Handling (Requirement G)
+# ---------------------------------------------------------------------------
+@pytest.mark.anyio
+async def test_17_contradictory_source_records_discrete_preservation():
+    # Source A approves the feature
+    source_a = "Sprint 1: OAuth2 Social Login was approved by the architecture board."
+    events_a = await extract_events_from_record(
+        project_id="proj-p05",
+        source_id="src-a",
+        record_type="meeting_notes",
+        title="Sprint 1",
+        source_date=date(2024, 1, 10),
+        source_date_raw="January 10, 2024",
+        content=source_a,
+    )
+    # Source B rejects the feature due to security compliance
+    source_b = "Security Audit: Status: REJECTED. OAuth2 Social Login was rejected by compliance."
+    events_b = await extract_events_from_record(
+        project_id="proj-p05",
+        source_id="src-b",
+        record_type="audit_report",
+        title="Security Audit",
+        source_date=date(2024, 1, 15),
+        source_date_raw="January 15, 2024",
+        content=source_b,
+    )
+    # Both events are preserved discretely with their respective source IDs without overwriting
+    assert events_a[0].event_type == "APPROVED"
+    assert events_a[0].source_id == "src-a"
+    assert events_b[0].event_type == "REJECTED"
+    assert events_b[0].source_id == "src-b"
+

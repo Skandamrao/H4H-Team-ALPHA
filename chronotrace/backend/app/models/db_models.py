@@ -264,6 +264,8 @@ class TemporalEvent(Base):
     # Source provenance (Rule H — compulsory)
     source_id: Mapped[str] = mapped_column(ForeignKey("source_records.id"), nullable=False, index=True)
     evidence_excerpt: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_offset_start: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    evidence_offset_end: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     actor: Mapped[Optional[str]] = mapped_column(String(256))
 
     # Related events (JSON array of event IDs)
