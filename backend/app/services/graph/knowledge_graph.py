@@ -204,17 +204,29 @@ class TemporalKnowledgeGraph:
 
                 return {"nodes": nodes, "edges": edges, "filtered_feature_id": feature_id}
 
-        # Global graph view
+        # Global graph view: Prioritize connected nodes with active relationships
         all_nodes = list(self.graph.nodes(data=True))
         sorted_nodes = sorted(
             all_nodes,
-            key=lambda x: {"module": 0, "feature": 1, "event": 2, "document": 3, "person": 4}.get(
-                x[1].get("node_type", ""), 5
+            key=lambda x: (
+                self.graph.degree(x[0]) > 0,  # Connected nodes first!
+                {"module": 4, "feature": 3, "event": 2, "document": 1, "person": 0}.get(
+                    x[1].get("node_type", ""), 0
+                ),
+                self.graph.degree(x[0]),  # Higher degree first
             ),
+            reverse=True,
         )
         included = set()
         for nid, data in sorted_nodes[:limit_nodes]:
-            nodes.append({"id": nid, "label": data.get("label", nid), **data})
+            degree = self.graph.degree(nid)
+            nodes.append({
+                "id": nid,
+                "label": data.get("label", nid),
+                "degree": degree,
+                "is_isolated": degree == 0,
+                **data,
+            })
             included.add(nid)
 
         for src, dst, data in self.graph.edges(data=True):

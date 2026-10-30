@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from 'react'
+import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import ReactFlow, {
@@ -12,11 +12,14 @@ import ReactFlow, {
   BackgroundVariant,
   Position,
   MarkerType,
+  ReactFlowInstance,
+  Handle,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import dagre from '@dagrejs/dagre'
 import { getKnowledgeGraph, rebuildGraph, getFeatures } from '@/lib/api'
 import PageHeader from '@/components/PageHeader'
+import { cn } from '@/lib/utils'
 import {
   RefreshCw,
   Info,
@@ -27,48 +30,52 @@ import {
   FileText,
   Boxes,
   AlertTriangle,
-  ArrowDownUp,
-  ArrowLeftRight,
+  Filter,
+  Search,
+  Grid,
   Eye,
   EyeOff,
-  Filter,
+  Maximize2,
+  FolderTree,
+  Compass,
 } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 
 // Node type styling configurations
 const NODE_META: Record<
   string,
-  { bg: string; border: string; text: string; icon: any; label: string }
+  { bg: string; border: string; text: string; icon: LucideIcon; label: string }
 > = {
   module: {
-    bg: 'rgba(37, 99, 235, 0.12)',
+    bg: 'rgba(37, 99, 235, 0.16)',
     border: '#3b82f6',
     text: '#93c5fd',
     icon: Boxes,
     label: 'Module',
   },
   feature: {
-    bg: 'rgba(124, 58, 237, 0.14)',
+    bg: 'rgba(124, 58, 237, 0.16)',
     border: '#8b5cf6',
     text: '#c4b5fd',
     icon: Layers,
     label: 'Feature',
   },
   event: {
-    bg: 'rgba(5, 150, 105, 0.12)',
+    bg: 'rgba(5, 150, 105, 0.16)',
     border: '#10b981',
     text: '#6ee7b7',
     icon: Calendar,
     label: 'Event',
   },
   document: {
-    bg: 'rgba(217, 119, 6, 0.12)',
+    bg: 'rgba(217, 119, 6, 0.16)',
     border: '#f59e0b',
     text: '#fcd34d',
     icon: FileText,
     label: 'Document',
   },
   decision: {
-    bg: 'rgba(225, 29, 72, 0.12)',
+    bg: 'rgba(225, 29, 72, 0.16)',
     border: '#f43f5e',
     text: '#fda4af',
     icon: AlertTriangle,
@@ -94,6 +101,10 @@ interface RawNode {
   decision_status?: string
   has_conflict?: boolean
   source_document_filename?: string
+  is_isolated?: boolean
+  degree?: number
+  event_date?: string
+  module_name?: string
   [key: string]: unknown
 }
 
@@ -103,92 +114,143 @@ interface RawEdge {
   relationship_type: string
 }
 
-const NODE_WIDTH = 210
-const NODE_HEIGHT = 70
+const NODE_WIDTH = 230
+const NODE_HEIGHT = 80
+
+type LayoutStructure =
+  | 'clusters'
+  | 'swimlanes'
+  | 'concentric'
+  | 'timeline'
+  | 'hierarchical-tb'
+  | 'hierarchical-lr'
 
 /**
- * Applies Dagre directed acyclic graph layout to nodes and edges.
+ * Custom ReactFlow Node for rich rendering
  */
-function applyDagreLayout(
-  rawNodes: RawNode[],
-  rawEdges: RawEdge[],
-  direction: 'TB' | 'LR' = 'TB',
-  showDocuments: boolean = false
-): { nodes: Node[]; edges: Edge[] } {
-  // Filter out document nodes if showDocuments is false
-  const filteredRawNodes = showDocuments
-    ? rawNodes
-    : rawNodes.filter((n) => n.node_type !== 'document')
+function CustomKnowledgeNode({ data }: { data: any }) {
+  const meta = data.meta || NODE_META.event
+  const Icon = meta.icon || Calendar
+  const targetPos = data.targetPosition || Position.Top
+  const sourcePos = data.sourcePosition || Position.Bottom
 
-  const validNodeIds = new Set(filteredRawNodes.map((n) => n.id))
-
-  const filteredRawEdges = rawEdges.filter(
-    (e) => validNodeIds.has(e.source) && validNodeIds.has(e.target)
-  )
-
-  const g = new dagre.graphlib.Graph()
-  g.setGraph({
-    rankdir: direction,
-    ranksep: direction === 'TB' ? 85 : 120,
-    nodesep: direction === 'TB' ? 45 : 35,
-    edgesep: 25,
-    marginx: 30,
-    marginy: 30,
-  })
-  g.setDefaultEdgeLabel(() => ({}))
-
-  filteredRawNodes.forEach((node) => {
-    g.setNode(node.id, { width: NODE_WIDTH, height: NODE_HEIGHT })
-  })
-
-  filteredRawEdges.forEach((edge) => {
-    g.setEdge(edge.source, edge.target)
-  })
-
-  dagre.layout(g)
-
-  const isTB = direction === 'TB'
-
-  const nodes: Node[] = filteredRawNodes.map((node) => {
-    const dagreNode = g.node(node.id) || { x: 0, y: 0 }
-    const type = node.node_type || 'event'
-    const meta = NODE_META[type] || NODE_META.event
-
-    const truncatedLabel =
-      node.label && node.label.length > 28
-        ? node.label.slice(0, 26) + '…'
-        : node.label || node.id
-
-    return {
-      id: node.id,
-      position: {
-        x: dagreNode.x - NODE_WIDTH / 2,
-        y: dagreNode.y - NODE_HEIGHT / 2,
-      },
-      targetPosition: isTB ? Position.Top : Position.Left,
-      sourcePosition: isTB ? Position.Bottom : Position.Right,
-      data: {
-        ...node,
-        rawLabel: node.label,
-        truncatedLabel,
-        meta,
-      },
-      style: {
-        background: meta.bg,
-        border: `1.5px solid ${meta.border}`,
-        borderRadius: '10px',
-        padding: '8px 12px',
-        color: '#e2e8f0',
+  return (
+    <div
+      className={cn(
+        'group relative rounded-xl border p-2.5 transition-all duration-200 select-none shadow-md backdrop-blur-md',
+        'hover:shadow-lg hover:scale-[1.02] cursor-pointer'
+      )}
+      style={{
         width: NODE_WIDTH,
         minHeight: NODE_HEIGHT,
-        boxShadow: `0 4px 16px rgba(0, 0, 0, 0.4), 0 0 12px ${meta.border}22`,
-        backdropFilter: 'blur(8px)',
-        cursor: 'pointer',
-      },
-    }
-  })
+        backgroundColor: meta.bg,
+        borderColor: meta.border,
+        boxShadow: `0 4px 16px rgba(0, 0, 0, 0.45), 0 0 10px ${meta.border}22`,
+      }}
+    >
+      <Handle
+        type="target"
+        position={targetPos}
+        className="!w-2.5 !h-2.5 !bg-purple-400 !border-2 !border-slate-900 transition-colors"
+      />
 
-  const edges: Edge[] = filteredRawEdges.map((edge, i) => {
+      <div className="flex items-start justify-between gap-1 mb-1">
+        <div className="flex items-center gap-1.5 overflow-hidden">
+          <div
+            className="p-1 rounded-md flex-shrink-0"
+            style={{ backgroundColor: `${meta.border}25`, color: meta.text }}
+          >
+            <Icon size={12} />
+          </div>
+          <span
+            className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded truncate"
+            style={{ backgroundColor: `${meta.border}30`, color: meta.text }}
+          >
+            {meta.label}
+          </span>
+        </div>
+
+        {data.decision_status && (
+          <span
+            className={cn(
+              'text-[9px] font-bold px-1.5 py-0.5 rounded font-mono flex-shrink-0',
+              data.decision_status === 'APPROVED'
+                ? 'bg-emerald-500/25 text-emerald-300 border border-emerald-500/40'
+                : data.decision_status === 'REJECTED'
+                ? 'bg-rose-500/25 text-rose-300 border border-rose-500/40'
+                : 'bg-amber-500/25 text-amber-300 border border-amber-500/40'
+            )}
+          >
+            {data.decision_status}
+          </span>
+        )}
+
+        {data.has_conflict && (
+          <span className="p-0.5 text-rose-400 flex-shrink-0" title="Historical conflict">
+            <AlertTriangle size={12} />
+          </span>
+        )}
+      </div>
+
+      <div className="text-xs font-semibold text-slate-100 leading-snug line-clamp-2">
+        {data.label}
+      </div>
+
+      {(data.event_date || data.source_document_filename) && (
+        <div className="mt-1.5 pt-1 border-t border-slate-700/50 flex items-center justify-between text-[10px] text-slate-400">
+          {data.event_date ? (
+            <span className="font-mono text-slate-300 truncate">{data.event_date}</span>
+          ) : (
+            <span />
+          )}
+          {data.source_document_filename && (
+            <span className="truncate max-w-[110px] font-mono text-amber-300/80" title={data.source_document_filename}>
+              {data.source_document_filename}
+            </span>
+          )}
+        </div>
+      )}
+
+      <Handle
+        type="source"
+        position={sourcePos}
+        className="!w-2.5 !h-2.5 !bg-purple-400 !border-2 !border-slate-900 transition-colors"
+      />
+    </div>
+  )
+}
+
+const nodeTypes = {
+  custom: CustomKnowledgeNode,
+}
+
+function createFlowNode(
+  node: RawNode,
+  x: number,
+  y: number,
+  targetPos: Position,
+  sourcePos: Position
+): Node {
+  const type = node.node_type || 'event'
+  const meta = NODE_META[type] || NODE_META.event
+
+  return {
+    id: node.id,
+    type: 'custom',
+    position: { x, y },
+    targetPosition: targetPos,
+    sourcePosition: sourcePos,
+    data: {
+      ...node,
+      targetPosition: targetPos,
+      sourcePosition: sourcePos,
+      meta,
+    },
+  }
+}
+
+function formatEdges(edges: RawEdge[]): Edge[] {
+  return edges.map((edge, i) => {
     const strokeColor = EDGE_COLORS[edge.relationship_type] || '#7c3aed66'
     const isSequential = edge.relationship_type === 'EVENT_FOLLOWS_EVENT'
 
@@ -201,7 +263,7 @@ function applyDagreLayout(
       animated: isSequential,
       style: {
         stroke: strokeColor,
-        strokeWidth: isSequential ? 1.8 : 1.4,
+        strokeWidth: isSequential ? 2.0 : 1.4,
         strokeDasharray: isSequential ? '4 2' : undefined,
       },
       markerEnd: {
@@ -210,22 +272,408 @@ function applyDagreLayout(
         width: 14,
         height: 14,
       },
-      labelStyle: {
-        fill: '#94a3b8',
-        fontSize: 8.5,
-        fontWeight: 500,
-      },
-      labelBgStyle: {
-        fill: '#090d1f',
-        fillOpacity: 0.85,
-        rx: 4,
-        ry: 4,
-      },
+      labelStyle: { fill: '#94a3b8', fontSize: 8.5, fontWeight: 500 },
+      labelBgStyle: { fill: '#090d1f', fillOpacity: 0.85, rx: 4, ry: 4 },
       labelBgPadding: [4, 2] as [number, number],
     }
   })
+}
 
-  return { nodes, edges }
+/**
+ * 1. Component-Based 2D Shelf Grid Packing Layout
+ * Partitions graph into connected subgraphs (components), lays out each individually with Dagre,
+ * and packs them row-by-row into a balanced 16:9 canvas with zero overlap.
+ */
+function applyClusteredShelfLayout(
+  nodes: RawNode[],
+  edges: RawEdge[],
+  targetRowWidth: number = 2200
+): { nodes: Node[]; edges: Edge[] } {
+  const nodeMap = new Map<string, RawNode>()
+  nodes.forEach((n) => nodeMap.set(n.id, n))
+
+  // Build undirected adjacency list for connected components
+  const adj = new Map<string, Set<string>>()
+  nodes.forEach((n) => adj.set(n.id, new Set()))
+  edges.forEach((e) => {
+    if (adj.has(e.source) && adj.has(e.target)) {
+      adj.get(e.source)!.add(e.target)
+      adj.get(e.target)!.add(e.source)
+    }
+  })
+
+  // BFS to extract components
+  const visited = new Set<string>()
+  const connectedComps: {
+    compNodes: RawNode[]
+    compEdges: RawEdge[]
+    width: number
+    height: number
+    positions: Map<string, { x: number; y: number }>
+  }[] = []
+  const isolatedNodes: RawNode[] = []
+
+  nodes.forEach((n) => {
+    if (!visited.has(n.id)) {
+      const compIds: string[] = []
+      const queue = [n.id]
+      visited.add(n.id)
+
+      while (queue.length > 0) {
+        const curr = queue.shift()!
+        compIds.push(curr)
+        const neighbors = adj.get(curr) || new Set()
+        neighbors.forEach((nbr) => {
+          if (!visited.has(nbr)) {
+            visited.add(nbr)
+            queue.push(nbr)
+          }
+        })
+      }
+
+      if (compIds.length === 1 && (adj.get(compIds[0])?.size ?? 0) === 0) {
+        const iso = nodeMap.get(compIds[0])
+        if (iso) isolatedNodes.push(iso)
+      } else {
+        const compNodes = compIds.map((id) => nodeMap.get(id)!).filter(Boolean)
+        const compIdSet = new Set(compIds)
+        const compEdges = edges.filter(
+          (e) => compIdSet.has(e.source) && compIdSet.has(e.target)
+        )
+
+        // Run Dagre locally on this component
+        const g = new dagre.graphlib.Graph()
+        g.setGraph({
+          rankdir: 'TB',
+          ranksep: 70,
+          nodesep: 35,
+          edgesep: 20,
+          marginx: 10,
+          marginy: 10,
+        })
+        g.setDefaultEdgeLabel(() => ({}))
+
+        compNodes.forEach((node) => {
+          g.setNode(node.id, { width: NODE_WIDTH, height: NODE_HEIGHT })
+        })
+        compEdges.forEach((edge) => {
+          g.setEdge(edge.source, edge.target)
+        })
+
+        dagre.layout(g)
+
+        let minX = Infinity
+        let maxX = -Infinity
+        let minY = Infinity
+        let maxY = -Infinity
+
+        const positions = new Map<string, { x: number; y: number }>()
+        compNodes.forEach((node) => {
+          const pos = g.node(node.id) || { x: 0, y: 0 }
+          const left = pos.x - NODE_WIDTH / 2
+          const top = pos.y - NODE_HEIGHT / 2
+          minX = Math.min(minX, left)
+          maxX = Math.max(maxX, left + NODE_WIDTH)
+          minY = Math.min(minY, top)
+          maxY = Math.max(maxY, top + NODE_HEIGHT)
+          positions.set(node.id, { x: left, y: top })
+        })
+
+        const width = Math.max(NODE_WIDTH, maxX - minX)
+        const height = Math.max(NODE_HEIGHT, maxY - minY)
+
+        // Normalize positions to (0, 0) relative
+        const normalizedPositions = new Map<string, { x: number; y: number }>()
+        positions.forEach((pos, id) => {
+          normalizedPositions.set(id, { x: pos.x - minX, y: pos.y - minY })
+        })
+
+        connectedComps.push({
+          compNodes,
+          compEdges,
+          width,
+          height,
+          positions: normalizedPositions,
+        })
+      }
+    }
+  })
+
+  // Sort connected components by node count descending
+  connectedComps.sort((a, b) => b.compNodes.length - a.compNodes.length)
+
+  // Shelf bin-packing
+  const finalNodes: Node[] = []
+  const COL_GAP = 70
+  const ROW_GAP = 90
+
+  let currentX = 0
+  let currentY = 0
+  let maxRowHeight = 0
+  let rowCompsCount = 0
+
+  connectedComps.forEach((comp) => {
+    // If adding this component exceeds targetRowWidth and we already have components in this row, wrap
+    if (rowCompsCount > 0 && currentX + comp.width > targetRowWidth) {
+      currentX = 0
+      currentY += maxRowHeight + ROW_GAP
+      maxRowHeight = 0
+      rowCompsCount = 0
+    }
+
+    comp.compNodes.forEach((n) => {
+      const relPos = comp.positions.get(n.id) || { x: 0, y: 0 }
+      finalNodes.push(
+        createFlowNode(
+          n,
+          currentX + relPos.x,
+          currentY + relPos.y,
+          Position.Top,
+          Position.Bottom
+        )
+      )
+    })
+
+    currentX += comp.width + COL_GAP
+    maxRowHeight = Math.max(maxRowHeight, comp.height)
+    rowCompsCount++
+  })
+
+  // Place isolated nodes neatly below the connected graph in a grid
+  if (isolatedNodes.length > 0) {
+    const isoStartY = connectedComps.length > 0 ? currentY + maxRowHeight + ROW_GAP * 1.4 : 0
+    const ISO_COLS = 6
+    isolatedNodes.forEach((iso, idx) => {
+      const col = idx % ISO_COLS
+      const row = Math.floor(idx / ISO_COLS)
+      const x = col * (NODE_WIDTH + 30)
+      const y = isoStartY + row * (NODE_HEIGHT + 25)
+      finalNodes.push(createFlowNode(iso, x, y, Position.Top, Position.Bottom))
+    })
+  }
+
+  return { nodes: finalNodes, edges: formatEdges(edges) }
+}
+
+/**
+ * 2. Module Swimlanes Layout
+ * Groups features and events by Module into distinct vertical swimlanes.
+ */
+function applyModuleSwimlanesLayout(
+  nodes: RawNode[],
+  edges: RawEdge[]
+): { nodes: Node[]; edges: Edge[] } {
+  const modules = nodes.filter((n) => n.node_type === 'module')
+  const features = nodes.filter((n) => n.node_type === 'feature')
+
+  const featToModule = new Map<string, string>()
+  edges.forEach((e) => {
+    if (e.relationship_type === 'MODULE_CONTAINS_FEATURE') {
+      featToModule.set(e.target, e.source)
+    }
+  })
+
+  const featEvents = new Map<string, RawNode[]>()
+  edges.forEach((e) => {
+    if (e.relationship_type === 'FEATURE_HAS_EVENT') {
+      const ev = nodes.find((n) => n.id === e.target)
+      if (ev) {
+        const list = featEvents.get(e.source) || []
+        list.push(ev)
+        featEvents.set(e.source, list)
+      }
+    }
+  })
+
+  const finalNodes: Node[] = []
+  const LANE_WIDTH = NODE_WIDTH + 60
+  let laneIndex = 0
+
+  modules.forEach((mod) => {
+    const modFeatures = features.filter(
+      (f) => featToModule.get(f.id) === mod.id || f.module_name === mod.label
+    )
+
+    // Lane X position
+    const laneX = laneIndex * LANE_WIDTH
+    let currentY = 0
+
+    // 1. Module at Top
+    finalNodes.push(createFlowNode(mod, laneX, currentY, Position.Top, Position.Bottom))
+    currentY += NODE_HEIGHT + 60
+
+    // 2. Features and their events
+    modFeatures.forEach((feat) => {
+      finalNodes.push(createFlowNode(feat, laneX, currentY, Position.Top, Position.Bottom))
+      currentY += NODE_HEIGHT + 40
+
+      const evs = featEvents.get(feat.id) || []
+      evs.forEach((ev) => {
+        finalNodes.push(createFlowNode(ev, laneX, currentY, Position.Top, Position.Bottom))
+        currentY += NODE_HEIGHT + 35
+      })
+    })
+
+    laneIndex++
+  })
+
+  // Handle orphan features without modules
+  const handledFeatureIds = new Set(finalNodes.map((n) => n.id))
+  const unhandledFeatures = features.filter((f) => !handledFeatureIds.has(f.id))
+  if (unhandledFeatures.length > 0) {
+    const orphanLaneX = laneIndex * LANE_WIDTH
+    let currentY = 0
+    unhandledFeatures.forEach((feat) => {
+      finalNodes.push(createFlowNode(feat, orphanLaneX, currentY, Position.Top, Position.Bottom))
+      currentY += NODE_HEIGHT + 30
+    })
+  }
+
+  return { nodes: finalNodes, edges: formatEdges(edges) }
+}
+
+/**
+ * 3. Concentric Radial Orbit Layout
+ * Modules placed in inner circle, Features in middle orbit, Events/Decisions in outer orbit.
+ */
+function applyConcentricOrbitLayout(
+  nodes: RawNode[],
+  edges: RawEdge[]
+): { nodes: Node[]; edges: Edge[] } {
+  const modules = nodes.filter((n) => n.node_type === 'module')
+  const features = nodes.filter((n) => n.node_type === 'feature')
+  const events = nodes.filter((n) => n.node_type === 'event' || n.node_type === 'decision')
+  const documents = nodes.filter((n) => n.node_type === 'document')
+
+  const finalNodes: Node[] = []
+  const centerX = 1100
+  const centerY = 1100
+
+  // 1. Modules at Radius = 240
+  const R_MODULE = Math.max(220, modules.length * 40)
+  modules.forEach((m, i) => {
+    const angle = (2 * Math.PI * i) / (modules.length || 1)
+    const x = centerX + R_MODULE * Math.cos(angle) - NODE_WIDTH / 2
+    const y = centerY + R_MODULE * Math.sin(angle) - NODE_HEIGHT / 2
+    finalNodes.push(createFlowNode(m, x, y, Position.Top, Position.Bottom))
+  })
+
+  // 2. Features at Radius = 560
+  const R_FEATURE = Math.max(520, features.length * 12)
+  features.forEach((f, i) => {
+    const angle = (2 * Math.PI * i) / (features.length || 1)
+    const x = centerX + R_FEATURE * Math.cos(angle) - NODE_WIDTH / 2
+    const y = centerY + R_FEATURE * Math.sin(angle) - NODE_HEIGHT / 2
+    finalNodes.push(createFlowNode(f, x, y, Position.Top, Position.Bottom))
+  })
+
+  // 3. Events & Decisions at Radius = 880
+  const R_EVENT = Math.max(860, events.length * 25)
+  events.forEach((e, i) => {
+    const angle = (2 * Math.PI * i) / (events.length || 1)
+    const x = centerX + R_EVENT * Math.cos(angle) - NODE_WIDTH / 2
+    const y = centerY + R_EVENT * Math.sin(angle) - NODE_HEIGHT / 2
+    finalNodes.push(createFlowNode(e, x, y, Position.Top, Position.Bottom))
+  })
+
+  // 4. Documents at Radius = 1180
+  const R_DOC = Math.max(1180, documents.length * 35)
+  documents.forEach((d, i) => {
+    const angle = (2 * Math.PI * i) / (documents.length || 1)
+    const x = centerX + R_DOC * Math.cos(angle) - NODE_WIDTH / 2
+    const y = centerY + R_DOC * Math.sin(angle) - NODE_HEIGHT / 2
+    finalNodes.push(createFlowNode(d, x, y, Position.Top, Position.Bottom))
+  })
+
+  return { nodes: finalNodes, edges: formatEdges(edges) }
+}
+
+/**
+ * 4. Chronological Timeline Flow Layout
+ * Arranges events sequentially along horizontal lanes by time and feature.
+ */
+function applyTimelineFlowLayout(
+  nodes: RawNode[],
+  edges: RawEdge[]
+): { nodes: Node[]; edges: Edge[] } {
+  const finalNodes: Node[] = []
+
+  const modules = nodes.filter((n) => n.node_type === 'module')
+  const features = nodes.filter((n) => n.node_type === 'feature')
+  const events = nodes.filter((n) => n.node_type === 'event' || n.node_type === 'decision')
+  const documents = nodes.filter((n) => n.node_type === 'document')
+
+  // Column 1: Modules (x = 40)
+  modules.forEach((m, idx) => {
+    finalNodes.push(createFlowNode(m, 40, idx * 110, Position.Left, Position.Right))
+  })
+
+  // Column 2: Features (x = 340)
+  features.forEach((f, idx) => {
+    finalNodes.push(createFlowNode(f, 340, idx * 95, Position.Left, Position.Right))
+  })
+
+  // Columns 3+: Events arranged by chronological index
+  const sortedEvents = [...events].sort((a, b) => {
+    const da = a.event_date ? new Date(a.event_date).getTime() : 0
+    const db = b.event_date ? new Date(b.event_date).getTime() : 0
+    return da - db
+  })
+
+  const EVENTS_PER_COL = 8
+  sortedEvents.forEach((ev, idx) => {
+    const col = Math.floor(idx / EVENTS_PER_COL)
+    const row = idx % EVENTS_PER_COL
+    const x = 680 + col * (NODE_WIDTH + 50)
+    const y = row * 110
+    finalNodes.push(createFlowNode(ev, x, y, Position.Left, Position.Right))
+  })
+
+  // Rightmost column: Documents
+  documents.forEach((doc, idx) => {
+    const x = 680 + Math.ceil(sortedEvents.length / EVENTS_PER_COL) * (NODE_WIDTH + 50) + 60
+    finalNodes.push(createFlowNode(doc, x, idx * 90, Position.Left, Position.Right))
+  })
+
+  return { nodes: finalNodes, edges: formatEdges(edges) }
+}
+
+/**
+ * 5. Standard Dagre Hierarchical Layout (Top-to-Bottom or Left-to-Right)
+ */
+function applyStandardDagre(
+  nodes: RawNode[],
+  edges: RawEdge[],
+  direction: 'TB' | 'LR' = 'TB'
+): { nodes: Node[]; edges: Edge[] } {
+  const g = new dagre.graphlib.Graph()
+  g.setGraph({
+    rankdir: direction,
+    ranksep: direction === 'TB' ? 85 : 120,
+    nodesep: direction === 'TB' ? 45 : 35,
+    edgesep: 25,
+    marginx: 30,
+    marginy: 30,
+  })
+  g.setDefaultEdgeLabel(() => ({}))
+
+  nodes.forEach((n) => g.setNode(n.id, { width: NODE_WIDTH, height: NODE_HEIGHT }))
+  edges.forEach((e) => g.setEdge(e.source, e.target))
+  dagre.layout(g)
+
+  const isTB = direction === 'TB'
+  const flowNodes: Node[] = nodes.map((node) => {
+    const pos = g.node(node.id) || { x: 0, y: 0 }
+    return createFlowNode(
+      node,
+      pos.x - NODE_WIDTH / 2,
+      pos.y - NODE_HEIGHT / 2,
+      isTB ? Position.Top : Position.Left,
+      isTB ? Position.Bottom : Position.Right
+    )
+  })
+
+  return { nodes: flowNodes, edges: formatEdges(edges) }
 }
 
 export default function KnowledgeGraphPage() {
@@ -233,20 +681,29 @@ export default function KnowledgeGraphPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const currentFeatureFilter = searchParams.get('featureId') || ''
 
-  const [direction, setDirection] = useState<'TB' | 'LR'>('TB')
+  // View state: 'canvas' or 'explorer'
+  const [activeView, setActiveView] = useState<'canvas' | 'explorer'>('canvas')
+
+  // Layout method switcher
+  const [layoutStructure, setLayoutStructure] = useState<LayoutStructure>('clusters')
+
+  // Filters
   const [showDocuments, setShowDocuments] = useState<boolean>(false)
+  const [showIsolated, setShowIsolated] = useState<boolean>(false)
+  const [nodeSearch, setNodeSearch] = useState<string>('')
   const [selectedNode, setSelectedNode] = useState<RawNode | null>(null)
 
   const [nodes, setNodes, onNodesChange] = useNodesState([])
   const [edges, setEdges, onEdgesChange] = useEdgesState([])
+  const reactFlowInstance = useRef<ReactFlowInstance | null>(null)
 
-  // Fetch list of features for the filter dropdown
+  // Fetch list of features for focus selector
   const { data: featuresData } = useQuery({
     queryKey: ['features-list'],
     queryFn: () => getFeatures(0, 200),
   })
 
-  // Fetch graph data (filtered by featureId if specified)
+  // Fetch graph data
   const {
     data: graphData,
     isLoading,
@@ -262,20 +719,80 @@ export default function KnowledgeGraphPage() {
     onSuccess: () => refetch(),
   })
 
-  // Re-run Dagre layout when graphData, direction, or showDocuments change
-  useEffect(() => {
-    if (graphData && (graphData as any).nodes) {
-      const raw = graphData as { nodes: RawNode[]; edges: RawEdge[] }
-      const { nodes: layoutNodes, edges: layoutEdges } = applyDagreLayout(
-        raw.nodes || [],
-        raw.edges || [],
-        direction,
-        showDocuments
-      )
-      setNodes(layoutNodes)
-      setEdges(layoutEdges)
+  // Filter raw graph data based on user controls
+  const filteredData = useMemo(() => {
+    if (!graphData || !(graphData as any).nodes) return { nodes: [], edges: [] }
+    const raw = graphData as { nodes: RawNode[]; edges: RawEdge[] }
+
+    let nList = raw.nodes || []
+
+    // Filter document leaf nodes if unchecked
+    if (!showDocuments) {
+      nList = nList.filter((n) => n.node_type !== 'document')
     }
-  }, [graphData, direction, showDocuments, setNodes, setEdges])
+
+    // Filter isolated / 0-degree features if unchecked
+    if (!showIsolated && !currentFeatureFilter) {
+      nList = nList.filter((n) => !n.is_isolated || n.node_type === 'module')
+    }
+
+    // Filter by text search if provided
+    if (nodeSearch.trim()) {
+      const q = nodeSearch.toLowerCase()
+      nList = nList.filter(
+        (n) => n.label?.toLowerCase().includes(q) || n.node_type?.toLowerCase().includes(q)
+      )
+    }
+
+    const validIds = new Set(nList.map((n) => n.id))
+    const eList = (raw.edges || []).filter(
+      (e) => validIds.has(e.source) && validIds.has(e.target)
+    )
+
+    return { nodes: nList, edges: eList }
+  }, [graphData, showDocuments, showIsolated, currentFeatureFilter, nodeSearch])
+
+  // Apply chosen layout algorithm
+  useEffect(() => {
+    if (filteredData.nodes.length === 0) {
+      setNodes([])
+      setEdges([])
+      return
+    }
+
+    let result: { nodes: Node[]; edges: Edge[] }
+
+    switch (layoutStructure) {
+      case 'clusters':
+        result = applyClusteredShelfLayout(filteredData.nodes, filteredData.edges, 2200)
+        break
+      case 'swimlanes':
+        result = applyModuleSwimlanesLayout(filteredData.nodes, filteredData.edges)
+        break
+      case 'concentric':
+        result = applyConcentricOrbitLayout(filteredData.nodes, filteredData.edges)
+        break
+      case 'timeline':
+        result = applyTimelineFlowLayout(filteredData.nodes, filteredData.edges)
+        break
+      case 'hierarchical-tb':
+        result = applyStandardDagre(filteredData.nodes, filteredData.edges, 'TB')
+        break
+      case 'hierarchical-lr':
+        result = applyStandardDagre(filteredData.nodes, filteredData.edges, 'LR')
+        break
+      default:
+        result = applyClusteredShelfLayout(filteredData.nodes, filteredData.edges, 2200)
+    }
+
+    setNodes(result.nodes)
+    setEdges(result.edges)
+
+    // Trigger smooth fitView after layout calculation
+    setTimeout(() => {
+      reactFlowInstance.current?.fitView({ padding: 0.18, duration: 400 })
+    }, 120)
+  }, [filteredData, layoutStructure, setNodes, setEdges])
 
   const handleNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
     setSelectedNode(node.data as RawNode)
@@ -289,27 +806,95 @@ export default function KnowledgeGraphPage() {
     }
   }
 
-  const nodeStats = useMemo(() => {
-    return {
-      totalNodes: nodes.length,
-      totalEdges: edges.length,
-    }
-  }, [nodes, edges])
+  const resetZoomAndCenter = () => {
+    reactFlowInstance.current?.fitView({ padding: 0.18, duration: 500 })
+  }
+
+  // Grouped structure for the Structural Explorer view
+  const structuredHierarchy = useMemo(() => {
+    if (!graphData || !(graphData as any).nodes) return []
+    const raw = graphData as { nodes: RawNode[]; edges: RawEdge[] }
+
+    const modules = raw.nodes.filter((n) => n.node_type === 'module')
+    const features = raw.nodes.filter((n) => n.node_type === 'feature')
+
+    // Map features to modules
+    const featToModule = new Map<string, string>()
+    raw.edges.forEach((e) => {
+      if (e.relationship_type === 'MODULE_CONTAINS_FEATURE') {
+        featToModule.set(e.target, e.source)
+      }
+    })
+
+    // Map events to features
+    const featEvents = new Map<string, RawNode[]>()
+    raw.edges.forEach((e) => {
+      if (e.relationship_type === 'FEATURE_HAS_EVENT') {
+        const evNode = raw.nodes.find((n) => n.id === e.target)
+        if (evNode) {
+          const list = featEvents.get(e.source) || []
+          list.push(evNode)
+          featEvents.set(e.source, list)
+        }
+      }
+    })
+
+    return modules.map((mod) => {
+      const modFeatures = features.filter(
+        (f) => featToModule.get(f.id) === mod.id || f.module_name === mod.label
+      )
+      return {
+        module: mod,
+        features: modFeatures.map((f) => ({
+          feature: f,
+          events: featEvents.get(f.id) || [],
+        })),
+      }
+    })
+  }, [graphData])
 
   return (
     <div className="flex flex-col h-screen">
-      {/* Top Header & Controls */}
+      {/* Top Header & Interactive Controls */}
       <div className="px-6 pt-5 pb-3 flex-shrink-0 border-b border-purple-900/20 bg-[#0a0f1e]/90 backdrop-blur-md">
         <PageHeader
           title="Temporal Knowledge Graph"
-          subtitle="Hierarchical view of Modules, Features, Decisions, and Sequential Events with Dagre layout"
+          subtitle="Explore features, decisions, and sequential milestones with modular 2D clustering, radial orbits, swimlanes, and multi-structure layouts"
           actions={
             <div className="flex items-center gap-2">
+              {/* View Switcher: Canvas vs. Explorer */}
+              <div className="flex bg-slate-900/90 rounded-lg p-0.5 border border-slate-700/60 text-xs">
+                <button
+                  onClick={() => setActiveView('canvas')}
+                  className={cn(
+                    'flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium transition-all',
+                    activeView === 'canvas'
+                      ? 'bg-purple-600 text-white shadow-sm'
+                      : 'text-slate-400 hover:text-white'
+                  )}
+                >
+                  <Grid size={13} />
+                  <span>Graph Canvas</span>
+                </button>
+                <button
+                  onClick={() => setActiveView('explorer')}
+                  className={cn(
+                    'flex items-center gap-1.5 px-3 py-1.5 rounded-md font-medium transition-all',
+                    activeView === 'explorer'
+                      ? 'bg-purple-600 text-white shadow-sm'
+                      : 'text-slate-400 hover:text-white'
+                  )}
+                >
+                  <FolderTree size={13} />
+                  <span>Hierarchy Matrix</span>
+                </button>
+              </div>
+
               <button
                 onClick={() => rebuildMutation.mutate()}
                 disabled={rebuildMutation.isPending || isRefetching}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-600/20 hover:bg-purple-600/40 text-xs font-medium text-purple-300 border border-purple-500/30 transition-all disabled:opacity-50"
-                title="Re-evaluate all relationships and rebuild graph"
+                title="Rebuild graph from current database records"
               >
                 <RefreshCw
                   size={13}
@@ -321,18 +906,38 @@ export default function KnowledgeGraphPage() {
           }
         />
 
-        {/* Toolbar */}
+        {/* Toolbar Controls */}
         <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-xs">
-          {/* Left filters: Feature selection & Document toggle */}
-          <div className="flex items-center gap-2.5 flex-wrap">
-            {/* Feature selector */}
-            <div className="flex items-center gap-1.5 bg-slate-900/70 border border-slate-700/60 rounded-lg px-2.5 py-1 text-slate-300">
+          {/* Left filters & search */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Search in graph */}
+            <div className="relative">
+              <Search size={13} className="absolute left-2.5 top-2.5 text-slate-500" />
+              <input
+                type="text"
+                placeholder="Search nodes in graph..."
+                value={nodeSearch}
+                onChange={(e) => setNodeSearch(e.target.value)}
+                className="bg-slate-900/80 border border-slate-700/60 rounded-lg pl-8 pr-7 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-purple-500/70 w-48"
+              />
+              {nodeSearch && (
+                <button
+                  onClick={() => setNodeSearch('')}
+                  className="absolute right-2 top-2 text-slate-500 hover:text-slate-300"
+                >
+                  <X size={12} />
+                </button>
+              )}
+            </div>
+
+            {/* Feature Focus Filter */}
+            <div className="flex items-center gap-1.5 bg-slate-900/70 border border-slate-700/60 rounded-lg px-2.5 py-1.5 text-slate-300">
               <Filter size={13} className="text-purple-400" />
               <span className="text-slate-400 font-medium">Focus:</span>
               <select
                 value={currentFeatureFilter}
                 onChange={(e) => handleFeatureFilterChange(e.target.value)}
-                className="bg-transparent text-slate-200 text-xs focus:outline-none cursor-pointer max-w-[180px] truncate"
+                className="bg-transparent text-slate-200 text-xs focus:outline-none cursor-pointer max-w-[170px] truncate"
               >
                 <option value="" className="bg-[#0d1530] text-slate-200">
                   All Features (Global View)
@@ -343,40 +948,44 @@ export default function KnowledgeGraphPage() {
                   </option>
                 ))}
               </select>
-              {currentFeatureFilter && (
-                <button
-                  onClick={() => handleFeatureFilterChange('')}
-                  className="hover:text-white text-slate-400 p-0.5"
-                  title="Clear focus"
-                >
-                  <X size={12} />
-                </button>
-              )}
             </div>
 
-            {/* Layout Direction Toggle */}
-            <button
-              onClick={() => setDirection((d) => (d === 'TB' ? 'LR' : 'TB'))}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-900/70 hover:bg-slate-800 text-slate-300 border border-slate-700/60 transition-colors"
-              title="Toggle graph orientation"
-            >
-              {direction === 'TB' ? (
-                <>
-                  <ArrowDownUp size={13} className="text-emerald-400" />
-                  <span>Top-Down</span>
-                </>
-              ) : (
-                <>
-                  <ArrowLeftRight size={13} className="text-blue-400" />
-                  <span>Left-to-Right</span>
-                </>
-              )}
-            </button>
+            {/* Layout Structure Switcher (Canvas View) */}
+            {activeView === 'canvas' && (
+              <div className="flex items-center gap-1.5 bg-slate-900/70 border border-slate-700/60 rounded-lg px-2.5 py-1 text-slate-300">
+                <Compass size={13} className="text-purple-400" />
+                <span className="text-slate-400 font-medium">Structure:</span>
+                <select
+                  value={layoutStructure}
+                  onChange={(e) => setLayoutStructure(e.target.value as LayoutStructure)}
+                  className="bg-transparent text-purple-300 font-medium text-xs focus:outline-none cursor-pointer"
+                >
+                  <option value="clusters" className="bg-[#0d1530] text-slate-200">
+                    Modular Clusters (2D Shelf Grid)
+                  </option>
+                  <option value="swimlanes" className="bg-[#0d1530] text-slate-200">
+                    Module Swimlanes
+                  </option>
+                  <option value="concentric" className="bg-[#0d1530] text-slate-200">
+                    Concentric Radial Orbit
+                  </option>
+                  <option value="timeline" className="bg-[#0d1530] text-slate-200">
+                    Chronological Flow
+                  </option>
+                  <option value="hierarchical-tb" className="bg-[#0d1530] text-slate-200">
+                    Hierarchical (Top-Down)
+                  </option>
+                  <option value="hierarchical-lr" className="bg-[#0d1530] text-slate-200">
+                    Hierarchical (Left-to-Right)
+                  </option>
+                </select>
+              </div>
+            )}
 
-            {/* Show Documents Leaf Nodes Toggle */}
+            {/* Toggle Show Documents */}
             <button
               onClick={() => setShowDocuments((v) => !v)}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border transition-colors ${
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border transition-colors ${
                 showDocuments
                   ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
                   : 'bg-slate-900/70 text-slate-400 border-slate-700/60 hover:text-slate-200'
@@ -384,61 +993,166 @@ export default function KnowledgeGraphPage() {
               title="Toggle source document leaf nodes"
             >
               {showDocuments ? <Eye size={13} /> : <EyeOff size={13} />}
-              <span>{showDocuments ? 'Hide Documents' : 'Show Documents'}</span>
+              <span>{showDocuments ? 'Documents Visible' : 'Hide Documents'}</span>
+            </button>
+
+            {/* Toggle Show Isolated Entities */}
+            <button
+              onClick={() => setShowIsolated((v) => !v)}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border transition-colors ${
+                showIsolated
+                  ? 'bg-purple-600/20 text-purple-300 border-purple-500/40'
+                  : 'bg-slate-900/70 text-slate-400 border-slate-700/60 hover:text-slate-200'
+              }`}
+              title="Toggle orphan features with no events"
+            >
+              <span>{showIsolated ? 'All 246 Entities' : 'Active Connected Graph'}</span>
             </button>
           </div>
 
-          {/* Right: Graph counts & Legend */}
+          {/* Right Stats & Fit-view Button */}
           <div className="flex items-center gap-3">
-            <span className="text-slate-500 font-mono text-[11px]">
-              {nodeStats.totalNodes} Nodes • {nodeStats.totalEdges} Edges
+            <span className="text-slate-400 font-mono text-[11px]">
+              {nodes.length} Visible Nodes • {edges.length} Edges
             </span>
-            <div className="h-3 w-px bg-slate-800" />
-            <div className="flex items-center gap-2">
-              {Object.entries(NODE_META).map(([type, meta]) => {
-                if (!showDocuments && type === 'document') return null
-                const Icon = meta.icon
-                return (
-                  <div key={type} className="flex items-center gap-1.5 text-[11px] text-slate-400">
-                    <Icon size={12} style={{ color: meta.border }} />
-                    <span>{meta.label}</span>
-                  </div>
-                )
-              })}
-            </div>
+            {activeView === 'canvas' && (
+              <button
+                onClick={resetZoomAndCenter}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs border border-slate-700 transition-colors"
+                title="Fit entire graph to screen"
+              >
+                <Maximize2 size={12} />
+                <span>Fit View</span>
+              </button>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Main Graph Canvas */}
-      <div className="flex-1 mx-6 my-4 rounded-xl border border-purple-900/30 overflow-hidden bg-[#070b19] relative shadow-inner">
+      {/* Main Content Area */}
+      <div className="flex-1 mx-6 my-4 rounded-xl border border-purple-900/30 overflow-hidden bg-[#070b19] relative shadow-inner flex flex-col">
         {isLoading ? (
           <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-3">
             <RefreshCw size={28} className="animate-spin text-purple-400" />
-            <div className="text-sm">Calculating hierarchical layout with Dagre…</div>
+            <div className="text-sm">Calculating graph layout and clustering…</div>
+          </div>
+        ) : activeView === 'explorer' ? (
+          /* Structural Hierarchy Matrix View */
+          <div className="flex-1 overflow-y-auto p-6 space-y-6">
+            <div className="flex items-center justify-between border-b border-purple-900/30 pb-3">
+              <div>
+                <h3 className="text-base font-semibold text-white">
+                  Product Architecture & Historical Matrix
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Complete breakdown of modules, canonical features, and their sequential lifecycle events
+                </p>
+              </div>
+              <span className="text-xs font-mono text-purple-400 bg-purple-950/40 px-3 py-1 rounded-lg border border-purple-800/40">
+                {structuredHierarchy.length} Modules Identified
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              {structuredHierarchy.map((group) => (
+                <div
+                  key={group.module.id}
+                  className="rounded-xl border border-blue-900/30 bg-[#0d1636]/90 p-5 space-y-4 shadow-lg backdrop-blur-md"
+                >
+                  <div className="flex items-center justify-between border-b border-blue-900/40 pb-3">
+                    <div className="flex items-center gap-2">
+                      <div className="p-1.5 rounded-lg bg-blue-600/20 text-blue-300 border border-blue-500/30">
+                        <Boxes size={16} />
+                      </div>
+                      <h4 className="text-sm font-bold text-white tracking-wide">
+                        {group.module.label}
+                      </h4>
+                    </div>
+                    <span className="text-[11px] font-mono text-slate-400">
+                      {group.features.length} features
+                    </span>
+                  </div>
+
+                  <div className="space-y-3">
+                    {group.features.map((item) => (
+                      <div
+                        key={item.feature.id}
+                        className="rounded-lg bg-slate-900/60 border border-slate-800/80 p-3 space-y-2 hover:border-purple-500/40 transition-colors"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-semibold text-purple-200">
+                            {item.feature.label}
+                          </span>
+                          <button
+                            onClick={() =>
+                              navigate(
+                                `/timeline?featureId=${
+                                  item.feature.feature_id || item.feature.id.replace('feature:', '')
+                                }`
+                              )
+                            }
+                            className="text-[10px] text-purple-400 hover:text-purple-300 flex items-center gap-1 font-medium"
+                          >
+                            <ExternalLink size={10} />
+                            Timeline
+                          </button>
+                        </div>
+
+                        {item.events.length > 0 ? (
+                          <div className="space-y-1.5 pt-1">
+                            {item.events.map((ev, i) => (
+                              <div
+                                key={i}
+                                className="flex items-start gap-2 text-[11px] text-slate-300 pl-2 border-l-2 border-emerald-500/40"
+                              >
+                                <span className="text-[10px] uppercase font-mono px-1 rounded bg-slate-800 text-slate-400">
+                                  {ev.decision_status || ev.node_type}
+                                </span>
+                                <span className="truncate">{ev.label}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="text-[11px] text-slate-500 italic">
+                            Initial feature record
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         ) : nodes.length === 0 ? (
+          /* Empty State */
           <div className="h-full flex items-center justify-center text-slate-500">
             <div className="text-center max-w-sm">
               <Info size={36} className="mx-auto mb-2 opacity-40 text-purple-400" />
               <div className="text-slate-300 font-medium">No Graph Data to Display</div>
               <div className="text-xs text-slate-500 mt-1">
                 {currentFeatureFilter
-                  ? 'No events or relationships found for this feature. Clear the focus filter to view all.'
-                  : 'Upload project documents on the Documents page to build the temporal knowledge graph.'}
+                  ? 'No events or relationships found for this feature.'
+                  : 'Upload project documents to build the temporal knowledge graph.'}
               </div>
             </div>
           </div>
         ) : (
+          /* Interactive ReactFlow Graph Canvas */
           <ReactFlow
             nodes={nodes}
             edges={edges}
+            nodeTypes={nodeTypes}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onNodeClick={handleNodeClick}
+            onInit={(instance) => {
+              reactFlowInstance.current = instance
+              instance.fitView({ padding: 0.18 })
+            }}
             fitView
-            minZoom={0.08}
-            maxZoom={1.8}
+            minZoom={0.12}
+            maxZoom={2.0}
             attributionPosition="bottom-left"
           >
             <Background variant={BackgroundVariant.Dots} gap={24} size={1.2} color="#1e293b" />
@@ -465,7 +1179,7 @@ export default function KnowledgeGraphPage() {
           </ReactFlow>
         )}
 
-        {/* Selected Node Details Drawer */}
+        {/* Selected Node Details Side Drawer */}
         {selectedNode && (
           <div className="absolute bottom-5 right-5 z-20 w-88 max-w-sm rounded-xl border border-purple-500/40 bg-[#0d1530]/95 p-4 backdrop-blur-md shadow-2xl space-y-3 transition-all animate-in fade-in slide-in-from-bottom-4">
             <div className="flex items-start justify-between gap-2">
@@ -492,7 +1206,6 @@ export default function KnowledgeGraphPage() {
               </button>
             </div>
 
-            {/* Node Metadata Details */}
             <div className="space-y-1.5 text-xs text-slate-300 bg-slate-900/60 p-2.5 rounded-lg border border-slate-800/80">
               {selectedNode.decision_status && (
                 <div className="flex items-center justify-between">
@@ -513,7 +1226,7 @@ export default function KnowledgeGraphPage() {
 
               {selectedNode.status && (
                 <div className="flex items-center justify-between">
-                  <span className="text-slate-500">Lifecycle Status:</span>
+                  <span className="text-slate-500">Status:</span>
                   <span className="text-emerald-400 font-medium">{String(selectedNode.status)}</span>
                 </div>
               )}
@@ -535,14 +1248,15 @@ export default function KnowledgeGraphPage() {
               )}
             </div>
 
-            {/* Actions depending on node type */}
             <div className="pt-1 flex gap-2">
               {selectedNode.node_type === 'feature' && (
                 <>
                   <button
                     onClick={() =>
                       navigate(
-                        `/timeline?featureId=${selectedNode.feature_id || selectedNode.id}`
+                        `/timeline?featureId=${
+                          selectedNode.feature_id || selectedNode.id.replace('feature:', '')
+                        }`
                       )
                     }
                     className="flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-lg bg-purple-600/30 hover:bg-purple-600/50 text-xs font-medium text-purple-200 border border-purple-500/30 transition-all hover:shadow"
@@ -552,7 +1266,9 @@ export default function KnowledgeGraphPage() {
                   </button>
                   <button
                     onClick={() =>
-                      handleFeatureFilterChange(selectedNode.feature_id || selectedNode.id)
+                      handleFeatureFilterChange(
+                        selectedNode.feature_id || selectedNode.id.replace('feature:', '')
+                      )
                     }
                     className="flex items-center justify-center gap-1 py-2 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-300 border border-slate-700 transition-colors"
                     title="Focus on this feature's subgraph"
