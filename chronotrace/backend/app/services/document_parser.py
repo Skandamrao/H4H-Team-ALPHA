@@ -211,6 +211,82 @@ class DocumentParser:
         return doc
 
     @classmethod
+    def parse_consolidated_transcript(
+        cls,
+        text: str,
+        project_id: str = "proj-alpha",
+        file_ref: Optional[str] = "Consolidated_meeting_transcript.txt",
+    ) -> List[NormalizedDocument]:
+        """
+        Parses a multi-meeting consolidated transcript file (e.g. sections marked [Brainstorm meeting 1], [meeting 2], etc.)
+        Splits into distinct NormalizedDocument records while preserving provenance and full context.
+        """
+        # Section headers pattern: [Section Name] at beginning of line
+        known_sections = [
+            "brainstorm meeting 1", "meeting 2", "meeting 3",
+            "rural customer report", "urban customer report",
+            "meeting 4", "complain dataset 1", "meeting 5",
+            "complain meeting 2", "latest meeting"
+        ]
+
+        # Find section positions
+        pattern = r"(?m)^\s*\[([^\]]+)\]"
+        matches = list(re.finditer(pattern, text))
+        
+        valid_sections = []
+        for m in matches:
+            t = m.group(1).strip()
+            if any(known in t.lower() for known in known_sections):
+                valid_sections.append(m)
+
+        if not valid_sections:
+            # Fall back to single document
+            return [cls.parse_unstructured_text(text, project_id, file_ref, "Consolidated Meeting Transcript")]
+
+        docs: List[NormalizedDocument] = []
+        for i, m in enumerate(valid_sections):
+            sec_title = m.group(1).strip()
+            start = m.end()
+            end = valid_sections[i + 1].start() if i + 1 < len(valid_sections) else len(text)
+            sec_content = text[start:end].strip()
+
+            # Determine record_type
+            title_lower = sec_title.lower()
+            if "report" in title_lower:
+                rec_type = "design_spec"
+            elif "complain" in title_lower:
+                rec_type = "feedback"
+            else:
+                rec_type = "meeting_notes"
+
+            # Detect primary speaker / chairman
+            chairman_match = re.search(r"Meeting Chairman\s*\(([^)]+)\)", sec_content) or re.search(r"^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s*\(", sec_content, re.M)
+            author = chairman_match.group(1).strip() if chairman_match else None
+
+            # Look for dates in first 5 lines
+            lines = [l.strip() for l in sec_content.split("\n") if l.strip()]
+            head = " ".join(lines[:5]) if lines else ""
+            date_match = re.search(r"(\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b|\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}(?:st|nd|rd|th)?\b)", head, re.I)
+            raw_date = date_match.group(1).strip() if date_match else None
+            parsed_date, _, _ = parse_date_expression(raw_date)
+
+            doc = NormalizedDocument(
+                project_id=project_id,
+                record_type=rec_type,
+                title=sec_title,
+                source_date=parsed_date,
+                source_date_raw=raw_date,
+                author=author,
+                content=sec_content,
+                file_reference=file_ref,
+                metadata_json={"section_index": i + 1, "section_title": sec_title},
+            )
+            doc.content_fingerprint = doc.compute_fingerprint()
+            docs.append(doc)
+
+        return docs
+
+    @classmethod
     def parse_unstructured_text(
         cls,
         text: str,
@@ -262,3 +338,4 @@ class DocumentParser:
         )
         doc.content_fingerprint = doc.compute_fingerprint()
         return doc
+

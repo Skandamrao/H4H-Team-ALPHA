@@ -105,6 +105,46 @@ class TemporalEventCreate(BaseModel):
                 raise ValueError("RENAMED events require both previous_name and new_name")
         return self
 
+    @model_validator(mode="after")
+    def validate_compulsory_evidence(self) -> "TemporalEventCreate":
+        if not self.evidence_excerpt or not self.evidence_excerpt.strip():
+            raise ValueError("Rule H violation: evidence_excerpt is compulsory and cannot be empty")
+        return self
+
+    @model_validator(mode="after")
+    def validate_rules_a_and_b(self) -> "TemporalEventCreate":
+        excerpt_lower = self.evidence_excerpt.lower()
+        if self.event_type == "IMPLEMENTED":
+            approval_only_phrases = [
+                "no implementation has started",
+                "approval only",
+                "never implemented",
+                "still not approved",
+                "not shipped",
+                "pending approval",
+            ]
+            if any(phrase in excerpt_lower for phrase in approval_only_phrases):
+                raise ValueError(
+                    f"Rule A violation: event_type cannot be IMPLEMENTED when evidence states: '{self.evidence_excerpt}'"
+                )
+
+        if self.event_type == "APPROVED":
+            non_approved_phrases = [
+                "no decision made",
+                "has not been approved",
+                "not approved yet",
+                "pending security review",
+                "pending design review",
+                "pending legal review",
+                "no approval decision made",
+            ]
+            if any(phrase in excerpt_lower for phrase in non_approved_phrases):
+                raise ValueError(
+                    f"Rule B violation: event_type cannot be APPROVED when evidence indicates unapproved status: '{self.evidence_excerpt}'"
+                )
+
+        return self
+
 
 # ---------------------------------------------------------------------------
 # Conflict schema

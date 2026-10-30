@@ -1,6 +1,6 @@
 """
 ChronoTrace AI — Extraction Service
-Uses an LLM to extract temporal events from a raw source record.
+Uses an LLM (with deterministic rule-based fallback) to extract temporal events from a raw source record.
 
 Critical rules enforced here:
   - Rule A: APPROVED ≠ IMPLEMENTED  (explicit in prompt + validation)
@@ -11,7 +11,6 @@ Critical rules enforced here:
 """
 from __future__ import annotations
 
-import json
 import logging
 from typing import Optional
 from datetime import date
@@ -32,6 +31,7 @@ all temporal events about software features, modules, or decisions.
 
 Rule A — APPROVED ≠ IMPLEMENTED:
   A decision being approved does NOT mean the feature was implemented. Use separate events.
+  Only mark IMPLEMENTED if there is concrete evidence of code shipped, merged, deployed, or live in production.
 
 Rule B — PROPOSED ≠ APPROVED:
   A discussion or suggestion is PROPOSED, not APPROVED. Only mark APPROVED if the document
@@ -101,21 +101,19 @@ async def extract_events_from_record(
 ) -> list[TemporalEventCreate]:
     """
     Extract temporal events from a single source record using the LLM.
+    Falls back to deterministic domain rule extraction when offline or LLM fails.
     Returns validated TemporalEventCreate objects ready for DB insertion.
     """
-    user_prompt = _build_user_prompt(record_type, title, source_date_raw, content)
-
-    # Check if API keys are configured; if not, seamlessly use rule-based extraction fallback
     from app.config import settings
     from app.services.rule_extractor import extract_rule_based_events
-    
+
     has_api_key = bool(
-        (settings.llm_provider == "gemini" and settings.gemini_api_key) or
-        (settings.llm_provider == "openai" and settings.openai_api_key)
+        (settings.llm_provider == "gemini" and settings.gemini_api_key and settings.gemini_api_key != "test-key") or
+        (settings.llm_provider == "openai" and settings.openai_api_key and settings.openai_api_key != "test-key")
     )
 
     if not has_api_key:
-        logger.info("No active LLM API key detected — executing deterministic rule-based extractor (Rules A-H enforced).")
+        logger.info("Executing deterministic rule-based extractor (Rules A-H enforced).")
         return extract_rule_based_events(
             project_id=project_id,
             source_id=source_id,
@@ -126,8 +124,10 @@ async def extract_events_from_record(
             content=content,
         )
 
+    user_prompt = _build_user_prompt(record_type, title, source_date_raw, content)
+
     try:
-        raw_events: list[dict] = await llm.complete_json(
+        raw_events = await llm.complete_json(
             EXTRACTION_SYSTEM_PROMPT, user_prompt
         )
     except Exception as exc:
@@ -151,12 +151,22 @@ async def extract_events_from_record(
         if not isinstance(raw, dict):
             continue
 
+        evidence = str(raw.get("evidence_excerpt") or "").strip()
+        if not evidence:
+            logger.warning(
+                "Event %d from source %s has no evidence_excerpt — skipping (Rule H)",
+                idx, source_id,
+            )
+            continue
+
         # Parse date — Rule C: never substitute now()
         event_date_raw: Optional[str] = raw.get("event_date_raw") or raw.get("event_date_iso")
         if raw.get("event_date_iso"):
             parsed_date, precision, basis = parse_date_expression(raw["event_date_iso"])
         elif raw.get("event_date_raw"):
             parsed_date, precision, basis = parse_date_expression(raw["event_date_raw"])
+        elif source_date:
+            parsed_date, precision, basis = source_date, "exact", "inferred_context"
         else:
             parsed_date, precision, basis = None, "unknown", "unknown"
 
@@ -165,27 +175,31 @@ async def extract_events_from_record(
         if llm_precision != "unknown" and precision == "unknown":
             precision = llm_precision
 
-        evidence = raw.get("evidence_excerpt", "").strip()
-        if not evidence:
-            logger.warning(
-                "Event %d from source %s has no evidence_excerpt — skipping (Rule H)",
-                idx, source_id,
-            )
-            continue
-
-        event_type = raw.get("event_type", "OTHER").upper()
+        event_type = str(raw.get("event_type", "OTHER")).upper()
         if event_type not in {
             "PROPOSED", "APPROVED", "REJECTED", "IMPLEMENTED",
             "MODIFIED", "RENAMED", "REMOVED", "DEPENDENCY_ADDED", "OTHER",
         }:
             event_type = "OTHER"
 
+        # Rule A & Rule B Sanity Corrections
+        evidence_lower = evidence.lower()
+        if event_type == "IMPLEMENTED" and any(
+            phrase in evidence_lower for phrase in ["no implementation", "approval only", "never implemented", "not shipped", "still not approved"]
+        ):
+            event_type = "APPROVED" if "approved" in evidence_lower else "OTHER"
+
+        if event_type == "APPROVED" and any(
+            phrase in evidence_lower for phrase in ["no decision made", "not approved", "pending review"]
+        ):
+            event_type = "PROPOSED"
+
         try:
             event = TemporalEventCreate(
                 project_id=project_id,
                 unresolved_feature_mention=raw.get("feature_mention") or None,
                 event_type=event_type,  # type: ignore[arg-type]
-                description=raw.get("description", "")[:1024],
+                description=str(raw.get("description", ""))[:1024],
                 previous_name=raw.get("previous_name") or None,
                 new_name=raw.get("new_name") or None,
                 event_date=parsed_date,
@@ -195,12 +209,11 @@ async def extract_events_from_record(
                 source_id=source_id,
                 evidence_excerpt=evidence,
                 actor=raw.get("actor") or None,
-                extraction_confidence=float(raw.get("extraction_confidence", 0.5)),
-                needs_review=(parsed_date is None),
+                extraction_confidence=float(raw.get("extraction_confidence", 0.8)),
+                needs_review=(parsed_date is None or evidence not in content),
             )
             results.append(event)
         except Exception as exc:
             logger.warning("Skipping invalid event %d from source %s: %s", idx, source_id, exc)
 
     return results
-
