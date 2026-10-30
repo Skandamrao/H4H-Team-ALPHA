@@ -12,8 +12,7 @@ from app.schemas.schemas import FeatureResponse, FeatureListResponse, FeatureAli
 router = APIRouter()
 
 
-def _build_feature_response(feature: Feature, db: Session) -> FeatureResponse:
-    event_count = db.query(func.count(Event.id)).filter(Event.feature_id == feature.id).scalar() or 0
+def _build_feature_response(feature: Feature, event_count: int) -> FeatureResponse:
     aliases = [
         FeatureAliasResponse(id=a.id, alias=a.alias, is_canonical=a.is_canonical, added_at=a.added_at)
         for a in feature.aliases
@@ -36,14 +35,37 @@ def list_features(
     skip: int = 0,
     limit: int = 100,
     status: Optional[str] = Query(None),
+    has_events: Optional[bool] = Query(None, description="Filter features that have at least one event"),
     db: Session = Depends(get_db),
 ):
     query = db.query(Feature)
     if isinstance(status, str) and status:
         query = query.filter(Feature.current_status == status)
+    if has_events is True:
+        event_feat_ids = db.query(Event.feature_id).filter(Event.feature_id.isnot(None)).distinct()
+        query = query.filter(Feature.id.in_(event_feat_ids))
+    elif has_events is False:
+        event_feat_ids = db.query(Event.feature_id).filter(Event.feature_id.isnot(None)).distinct()
+        query = query.filter(~Feature.id.in_(event_feat_ids))
     total = query.count()
     features = query.order_by(Feature.canonical_name).offset(skip).limit(limit).all()
-    return FeatureListResponse(total=total, features=[_build_feature_response(f, db) for f in features])
+
+    # Batch count events for all features in a single fast query
+    feat_ids = [f.id for f in features]
+    counts_map = {}
+    if feat_ids:
+        rows = (
+            db.query(Event.feature_id, func.count(Event.id))
+            .filter(Event.feature_id.in_(feat_ids))
+            .group_by(Event.feature_id)
+            .all()
+        )
+        counts_map = {r[0]: r[1] for r in rows}
+
+    return FeatureListResponse(
+        total=total,
+        features=[_build_feature_response(f, counts_map.get(f.id, 0)) for f in features]
+    )
 
 
 @router.get("/{feature_id}", response_model=FeatureResponse)
@@ -51,4 +73,5 @@ def get_feature(feature_id: str, db: Session = Depends(get_db)):
     feature = db.get(Feature, feature_id)
     if not feature:
         raise HTTPException(status_code=404, detail="Feature not found.")
-    return _build_feature_response(feature, db)
+    event_count = db.query(func.count(Event.id)).filter(Event.feature_id == feature.id).scalar() or 0
+    return _build_feature_response(feature, event_count)

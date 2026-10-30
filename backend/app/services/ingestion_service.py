@@ -196,6 +196,7 @@ def ingest_document(
     original_filename: str,
     batch_id: Optional[str] = None,
     project_id: Optional[str] = None,
+    trigger_rebuild: bool = True,
 ) -> Document:
     """
     Full ingestion pipeline for a single document.
@@ -304,10 +305,11 @@ def ingest_document(
             db.commit()
 
     # ── 9. Rebuild knowledge graph ────────────────────────────────────────────
-    try:
-        rebuild_graph(db)
-    except Exception as exc:
-        logger.warning("Graph rebuild failed: %s", exc)
+    if trigger_rebuild:
+        try:
+            rebuild_graph(db)
+        except Exception as exc:
+            logger.warning("Graph rebuild failed: %s", exc)
 
     logger.info(
         "Ingested '%s': %d events extracted, %d errors.",

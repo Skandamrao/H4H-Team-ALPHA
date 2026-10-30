@@ -1,4 +1,4 @@
-# Environment & Secrets
+# ─── Secrets & Environment ───────────────────────────────────────────────────
 .env
 *.env
 **/.env
@@ -9,7 +9,7 @@ backend/.env
 !.env.example
 !backend/.env.example
 
-# Python
+# ─── Python ──────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *.pyo
@@ -26,29 +26,34 @@ build/
 .coverage
 htmlcov/
 .mypy_cache/
+test.log
+test_uploads/
 
-# Database
+# ─── Database & Runtime Data ──────────────────────────────────────────────────
 *.db
 *.sqlite
 *.sqlite3
+*.db-shm
+*.db-wal
 
-# Uploads
-uploads/
-logs/
+# ─── Uploads & Logs (runtime-generated) ──────────────────────────────────────
+backend/uploads/*
+!backend/uploads/.gitkeep
+backend/logs/*
+!backend/logs/.gitkeep
 
-# Node
+# ─── Node / Frontend ──────────────────────────────────────────────────────────
 node_modules/
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
+package-lock.json
+*.tsbuildinfo
 
-# IDE
+# ─── IDE & OS ─────────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
 *.swo
-
-# OS
 .DS_Store
 Thumbs.db
-

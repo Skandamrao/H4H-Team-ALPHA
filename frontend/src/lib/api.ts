@@ -157,8 +157,14 @@ export const uploadDocuments = (files: File[], projectId?: string, batchLabel?: 
   }).then(r => r.data)
 }
 
-export const getFeatures = (skip = 0, limit = 100) =>
-  api.get<{ total: number; features: Feature[] }>('/api/features/', { params: { skip, limit } }).then(r => r.data)
+export const getFeatures = (skip = 0, limit = 200, hasEvents?: boolean) =>
+  api.get<{ total: number; features: Feature[] }>('/api/features/', {
+    params: {
+      skip,
+      limit,
+      ...(hasEvents !== undefined ? { has_events: hasEvents } : {}),
+    },
+  }).then(r => r.data)
 
 export const getFeature = (id: string) =>
   api.get<Feature>(`/api/features/${id}`).then(r => r.data)
@@ -169,8 +175,13 @@ export const getEvents = (params?: Record<string, string | boolean>) =>
 export const getFeatureTimeline = (featureId: string, toDate?: string) =>
   api.get<Timeline>(`/api/timeline/${featureId}`, { params: toDate ? { to_date: toDate } : undefined }).then(r => r.data)
 
-export const getKnowledgeGraph = () =>
-  api.get('/api/graph/').then(r => r.data)
+export const getKnowledgeGraph = (featureId?: string, onlyWithEvents?: boolean) =>
+  api.get('/api/graph/', {
+    params: {
+      ...(featureId ? { feature_id: featureId } : {}),
+      ...(onlyWithEvents !== undefined ? { only_with_events: onlyWithEvents } : {}),
+    },
+  }).then(r => r.data)
 
 export const rebuildGraph = () =>
   api.post('/api/graph/rebuild').then(r => r.data)

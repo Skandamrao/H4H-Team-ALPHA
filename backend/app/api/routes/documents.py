@@ -11,6 +11,7 @@ from app.db.database import get_db
 from app.models.models import Document, IngestionBatch, Event
 from app.schemas.schemas import DocumentResponse, DocumentListResponse, IngestionBatchResponse, DashboardStats
 from app.services.ingestion_service import ingest_document, IngestionError
+from app.services.historical_assistant import clear_answer_cache
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ async def upload_documents(
                 original_filename=upload.filename,
                 batch_id=batch.id,
                 project_id=project_id,
+                trigger_rebuild=False,
             )
             if doc.is_duplicate:
                 duplicates += 1
@@ -101,6 +103,18 @@ async def upload_documents(
     batch.duplicate_files = duplicates
     db.commit()
 
+    # Rebuild knowledge graph and detect conflicts ONCE for the entire batch
+    try:
+        from app.services.graph.knowledge_graph import rebuild_graph
+        from app.services.conflict_detector import detect_conflicts
+        rebuild_graph(db)
+        detect_conflicts(db)
+    except Exception as exc:
+        logger.warning("Batch graph rebuild or conflict detection failed: %s", exc)
+
+    # Clear assistant cache so new evidence is queried
+    clear_answer_cache()
+
     return results
 
 
@@ -110,13 +124,25 @@ def list_documents(
     limit: int = 50,
     db: Session = Depends(get_db),
 ):
-    """List all ingested documents with their event counts."""
+    """List all ingested documents with fast batch-counted event counts."""
     total = db.query(func.count(Document.id)).scalar() or 0
     docs = db.query(Document).order_by(Document.ingested_at.desc()).offset(skip).limit(limit).all()
 
+    # Single-query batch count for all documents
+    doc_ids = [d.id for d in docs]
+    counts_map = {}
+    if doc_ids:
+        rows = (
+            db.query(Event.source_document_id, func.count(Event.id))
+            .filter(Event.source_document_id.in_(doc_ids))
+            .group_by(Event.source_document_id)
+            .all()
+        )
+        counts_map = {r[0]: r[1] for r in rows}
+
     results = []
     for doc in docs:
-        event_count = db.query(func.count(Event.id)).filter(Event.source_document_id == doc.id).scalar() or 0
+        event_count = counts_map.get(doc.id, 0)
         results.append(DocumentResponse(
             id=doc.id,
             filename=doc.filename,
@@ -228,6 +254,8 @@ def delete_document(document_id: str, db: Session = Depends(get_db)):
     except Exception as exc:
         logger.warning("Graph rebuild or conflict detection failed after document deletion: %s", exc)
 
+    clear_answer_cache()
+
     return {
         "status": "success",
         "message": f"Document '{doc_filename}' and its associated events deleted successfully.",
@@ -300,6 +328,7 @@ def load_sample_dataset(db: Session = Depends(get_db)):
     try:
         from seed_sample_data import seed
         seed()
+        clear_answer_cache()
         return {"message": "Synthetic sample dataset loaded successfully.", "status": "success"}
     except Exception as exc:
         logger.error("Failed to load sample dataset: %s", exc)
@@ -356,6 +385,8 @@ def reprocess_all_documents(db: Session = Depends(get_db)):
         detect_conflicts(db)
     except Exception as exc:
         logger.warning("Graph rebuild or conflict detection failed during reprocess: %s", exc)
+
+    clear_answer_cache()
 
     return {
         "status": "success",
