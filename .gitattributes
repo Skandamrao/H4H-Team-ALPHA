@@ -1,0 +1,7 @@
+# Normalize line endings to LF on commit, checkout as-is on Windows
+* text=auto eol=lf
+
+# Force binary for images and lock files
+*.png binary
+*.jpg binary
+*.ico binary
