@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: chronograph-ai-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: python seed_sample_data.py && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: APP_DEBUG
+        value: false
+      - key: CORS_ALLOW_ALL
+        value: true
+      - key: DATABASE_URL
+        value: sqlite:///./chronograph.db
+      - key: UPLOAD_DIR
+        value: ./uploads
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+    autoDeploy: true
