@@ -345,7 +345,7 @@ class HistoricalAssistantService:
         raw = None
         last_exc = None
 
-        # 1. Try Google Gemini API (gemini-2.5-flash) if key is present
+        # 1. Try Google Gemini API (gemini-2.5-flash) with fast 5.0s timeout
         if gemini_key:
             try:
                 import google.generativeai as genai
@@ -355,20 +355,20 @@ class HistoricalAssistantService:
                     system_instruction=_ASSISTANT_SYSTEM_PROMPT,
                     generation_config={"response_mime_type": "application/json", "temperature": 0.1},
                 )
-                resp = model.generate_content(full_prompt)
+                resp = model.generate_content(full_prompt, request_options={"timeout": 5.0})
                 raw = resp.text
             except Exception as exc:
                 last_exc = exc
-                logger.warning("Gemini assistant call failed: %s. Falling back to Groq.", exc)
+                logger.warning("Gemini assistant call failed (timeout or quota): %s. Falling back to Groq.", exc)
 
-        # 2. Try Groq AI (GPT-OSS 120B / 20B / Llama 3.3)
+        # 2. Try Groq AI (GPT-OSS 120B / 20B / Llama 3.3) with 8.0s timeout
         if not raw and groq_key:
             models_to_try = ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.3-70b-versatile", "llama-3.1-8b-instant"]
             for model_name in models_to_try:
                 # Attempt with strict JSON mode
                 try:
                     import groq
-                    client = groq.Groq(api_key=groq_key)
+                    client = groq.Groq(api_key=groq_key, timeout=8.0)
                     completion = client.chat.completions.create(
                         model=model_name,
                         messages=[
@@ -377,6 +377,7 @@ class HistoricalAssistantService:
                         ],
                         response_format={"type": "json_object"},
                         temperature=0.1,
+                        timeout=8.0,
                     )
                     raw = completion.choices[0].message.content
                     if raw and raw.strip():
@@ -388,7 +389,7 @@ class HistoricalAssistantService:
                 # Fallback attempt: plain text mode without response_format constraint
                 try:
                     import groq
-                    client = groq.Groq(api_key=groq_key)
+                    client = groq.Groq(api_key=groq_key, timeout=8.0)
                     completion = client.chat.completions.create(
                         model=model_name,
                         messages=[
@@ -396,6 +397,7 @@ class HistoricalAssistantService:
                             {"role": "user", "content": f"{full_prompt}\n\nIMPORTANT: Output ONLY a JSON object starting directly with {{"},
                         ],
                         temperature=0.1,
+                        timeout=8.0,
                     )
                     raw = completion.choices[0].message.content
                     if raw and raw.strip():

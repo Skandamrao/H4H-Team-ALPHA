@@ -28,11 +28,11 @@ logger = logging.getLogger(__name__)
 # Chunk size in characters for Groq (~3,000 tokens per chunk).
 _GROQ_CHUNK_SIZE = 12_000
 
-# Seconds to sleep between Groq chunk calls to avoid TPM accumulation.
-_GROQ_CHUNK_DELAY_SEC = 2
+# Sleep between Groq chunk calls only on rate limit, 0 by default for max speed.
+_GROQ_CHUNK_DELAY_SEC = 0
 
 # Maximum number of chunks to process per document to avoid HTTP timeouts on massive files.
-_MAX_CHUNKS_PER_DOC = 8
+_MAX_CHUNKS_PER_DOC = 6
 
 # Groq models to use for extraction (with automatic fallback).
 _PRIMARY_MODEL = "openai/gpt-oss-120b"
@@ -178,7 +178,7 @@ class AIExtractionService:
         pass
 
     def _call_gemini(self, gemini_key: str, prompt: str) -> Optional[str]:
-        """Call Google Gemini API with JSON mode."""
+        """Call Google Gemini API with JSON mode and fast 6.0s timeout."""
         try:
             import google.generativeai as genai
             genai.configure(api_key=gemini_key)
@@ -186,10 +186,10 @@ class AIExtractionService:
                 "gemini-2.5-flash",
                 generation_config={"response_mime_type": "application/json", "temperature": 0.1},
             )
-            resp = model.generate_content(prompt)
+            resp = model.generate_content(prompt, request_options={"timeout": 6.0})
             return resp.text
         except Exception as exc:
-            logger.warning("Gemini extraction call failed (e.g. quota limit): %s. Falling back to Groq.", exc)
+            logger.warning("Gemini extraction call failed (e.g. quota limit or timeout): %s. Falling back to Groq.", exc)
             return None
 
     def _call_groq(self, groq_client, prompt: str) -> str:
@@ -202,7 +202,7 @@ class AIExtractionService:
         last_error = None
 
         for model_name in models_to_try:
-            # 1. First attempt: Strict JSON object mode
+            # 1. First attempt: Strict JSON object mode with 10s timeout
             try:
                 completion = groq_client.chat.completions.create(
                     model=model_name,
@@ -212,6 +212,7 @@ class AIExtractionService:
                     ],
                     response_format={"type": "json_object"},
                     temperature=0.1,
+                    timeout=10.0,
                 )
                 content = completion.choices[0].message.content
                 if content and content.strip():
@@ -246,6 +247,7 @@ class AIExtractionService:
                         },
                     ],
                     temperature=0.1,
+                    timeout=10.0,
                 )
                 content = completion.choices[0].message.content
                 if content and content.strip():
@@ -256,7 +258,6 @@ class AIExtractionService:
                     "Groq freeform call with model '%s' failed: %s. Trying fallback model.",
                     model_name, exc,
                 )
-                time.sleep(1)
 
         raise last_error or RuntimeError("All Groq model attempts failed.")
 
