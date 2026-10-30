@@ -102,3 +102,4 @@ class FeatureRepository:
             select(Feature).where(Feature.project_id == project_id).order_by(Feature.canonical_name.asc())
         )
         return list(result.scalars().all())
+

@@ -60,3 +60,4 @@ class ProjectRepository:
     async def list_projects(self) -> List[Project]:
         result = await self.db.execute(select(Project).order_by(Project.created_at.desc()))
         return list(result.scalars().all())
+

@@ -123,3 +123,4 @@ class EventRepository:
             .order_by(TemporalEvent.event_date.asc().nulls_last())
         )
         return list(result.scalars().all())
+

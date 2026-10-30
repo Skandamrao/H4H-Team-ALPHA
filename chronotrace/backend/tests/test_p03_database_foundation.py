@@ -352,3 +352,4 @@ async def test_10_historical_records_remain_intact_after_subsequent_writes():
             res_all = await db3.execute(select(TemporalEvent).where(TemporalEvent.project_id == pid))
             all_events = res_all.scalars().all()
             assert len(all_events) == 2
+

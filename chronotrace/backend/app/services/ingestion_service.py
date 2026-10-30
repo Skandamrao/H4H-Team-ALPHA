@@ -2,9 +2,13 @@
 ChronoTrace AI — Ingestion Service
 Orchestrates append-only ingestion of source records.
 
-Rule D: Never overwrites existing source records or temporal events.
-Rule C: event_date and ingestion_timestamp are always distinct fields.
-R10:    Later batches extend history, never replace it.
+Requirements enforced:
+  - Rule C: event_date, source_date, and ingestion_timestamp are always distinct fields.
+  - Rule D: Never overwrites existing source records or temporal events.
+  - Rule H: Every event has traceable evidence linked to its source document.
+  - R10:    Later batches extend history, never replace it.
+  - Idempotency: Repeated upload does not duplicate records or extraction effects.
+  - Fault tolerance: Per-record errors do not abort the entire batch.
 """
 from __future__ import annotations
 
@@ -25,6 +29,7 @@ from app.schemas.ingestion import (
 from app.services.extraction_service import extract_events_from_record
 from app.services.identity_resolver import resolve_feature_mention, apply_rename
 from app.services.conflict_detector import detect_conflicts_for_feature
+from app.services.document_parser import compute_fingerprint
 from app.utils.date_parser import parse_date_expression
 
 def _uuid() -> str:
@@ -58,13 +63,11 @@ async def ingest_batch(
     batch_id: Optional[str] = None,
 ) -> IngestBatchResponse:
     """
-    Ingest a batch of source records.
-    All DB writes in this call are appends only (Rule D).
+    Ingest a batch of source records with full idempotency and fault tolerance.
     """
     if not batch_id:
-        batch_id = str(uuid.uuid4())
+        batch_id = request.batch_id or str(uuid.uuid4())
 
-    # Guarantee all records target a verified project
     target_project_ids = {r.project_id for r in request.records}
     for pid in target_project_ids:
         await _ensure_project(db, pid)
@@ -77,8 +80,11 @@ async def ingest_batch(
         project_id=primary_pid,
         records_count=len(request.records),
         events_extracted=0,
+        failed_count=0,
+        duplicate_count=0,
         status="processing",
         created_at=_now(),
+        notes=request.notes or f"Mode: {request.mode}",
     )
     db.add(batch_record)
     await db.flush()
@@ -87,27 +93,59 @@ async def ingest_batch(
     total_events = 0
     total_features = 0
     total_conflicts = 0
+    successful_count = 0
+    failed_count = 0
+    duplicate_count = 0
     batch_warnings: list[str] = []
 
-    for record_in in request.records:
-        result = await _ingest_single_record(db, record_in, batch_id)
-        results.append(result)
-        total_events += result.events_extracted
-        total_features += result.features_identified
-        total_conflicts += result.conflicts_detected
-        batch_warnings.extend(result.warnings)
+    for idx, record_in in enumerate(request.records):
+        try:
+            # Per-record processing with idempotency and isolation
+            result = await _ingest_single_record(db, record_in, batch_id)
+            results.append(result)
+
+            if result.status == "duplicate":
+                duplicate_count += 1
+                batch_warnings.append(f"Record #{idx+1} ('{record_in.title or 'Untitled'}') is a duplicate; skipped extraction.")
+            elif result.status == "success":
+                successful_count += 1
+                total_events += result.events_extracted
+                total_features += result.features_identified
+                total_conflicts += result.conflicts_detected
+                batch_warnings.extend(result.warnings)
+            else:
+                failed_count += 1
+        except Exception as exc:
+            logger.error("Failed processing record #%d: %s", idx, exc, exc_info=True)
+            failed_count += 1
+            results.append(
+                IngestRecordResult(
+                    source_id="",
+                    status="failed",
+                    events_extracted=0,
+                    features_identified=0,
+                    conflicts_detected=0,
+                    warnings=[f"Failed processing record: {str(exc)}"],
+                    error=str(exc),
+                )
+            )
 
     # Update batch record metrics
     batch_record.events_extracted = total_events
-    batch_record.status = "completed"
+    batch_record.failed_count = failed_count
+    batch_record.duplicate_count = duplicate_count
+    batch_record.status = "completed" if failed_count == 0 else "partial_failure"
     batch_record.completed_at = _now()
 
-    # Final flush — session commit happens in get_db() dependency
     await db.flush()
 
     return IngestBatchResponse(
         batch_id=batch_id,
+        mode=request.mode,
         records_processed=len(request.records),
+        successful_records=successful_count,
+        failed_records=failed_count,
+        duplicate_records=duplicate_count,
         total_events_extracted=total_events,
         total_features_identified=total_features,
         total_conflicts_detected=total_conflicts,
@@ -123,10 +161,13 @@ async def _ingest_single_record(
 ) -> IngestRecordResult:
     warnings: list[str] = []
 
+    if not record_in.content or not record_in.content.strip():
+        raise ValueError("Record content cannot be empty.")
+
     # Ensure project exists
     await _ensure_project(db, record_in.project_id)
 
-    # Parse source date — Rule C
+    # Parse source date — Rule C (never defaulted to today)
     if record_in.source_date:
         source_date = record_in.source_date
         source_date_raw = record_in.source_date_raw or str(source_date)
@@ -138,7 +179,37 @@ async def _ingest_single_record(
         source_date_raw = None
         warnings.append("No source_date provided — document date is unknown.")
 
-    # Persist source record (append-only — distinct provenance preserved)
+    # Compute deterministic content fingerprint for idempotency
+    fingerprint = compute_fingerprint(
+        project_id=record_in.project_id,
+        record_type=record_in.record_type,
+        title=record_in.title,
+        author=record_in.author,
+        source_date_raw=source_date_raw,
+        content=record_in.content,
+    )
+
+    # Check for duplicate within the same project (Idempotency requirement)
+    dup_query = await db.execute(
+        select(SourceRecord).where(
+            SourceRecord.project_id == record_in.project_id,
+            SourceRecord.content_fingerprint == fingerprint,
+        )
+    )
+    existing_source = dup_query.scalars().first()
+
+    if existing_source:
+        # Existing document detected: return its ID, do not duplicate events
+        return IngestRecordResult(
+            source_id=existing_source.id,
+            status="duplicate",
+            events_extracted=0,
+            features_identified=0,
+            conflicts_detected=0,
+            warnings=["Duplicate source detected. Extraction skipped."],
+        )
+
+    # Persist brand new source record (append-only)
     source = SourceRecord(
         id=_uuid(),
         project_id=record_in.project_id,
@@ -149,9 +220,12 @@ async def _ingest_single_record(
         content=record_in.content,
         author=record_in.author,
         batch_id=batch_id,
+        content_fingerprint=fingerprint,
+        file_reference=record_in.file_reference,
+        metadata_json=record_in.metadata or {},
     )
     db.add(source)
-    await db.flush()  # get source.id
+    await db.flush()
 
     # Extract temporal events
     extracted = await extract_events_from_record(
@@ -229,7 +303,7 @@ async def _ingest_single_record(
                 evidence_excerpt=ev_create.evidence_excerpt,
             )
 
-        # Update feature lifecycle flags (derived from events, never from assumptions)
+        # Update feature lifecycle flags
         if feature_id:
             await _update_feature_flags(db, feature_id, ev_create.event_type)
 
@@ -243,6 +317,7 @@ async def _ingest_single_record(
 
     return IngestRecordResult(
         source_id=source.id,
+        status="success",
         events_extracted=events_stored,
         features_identified=len(features_seen),
         conflicts_detected=conflict_count,
@@ -266,7 +341,6 @@ async def _update_feature_flags(
     if event_type == "APPROVED":
         feat.is_approved = True
     elif event_type == "IMPLEMENTED":
-        feat.is_implemented = True          # Rule A: only IMPLEMENTED sets this
+        feat.is_implemented = True
     elif event_type == "REMOVED":
         feat.is_removed = True
-    # PROPOSED does NOT change is_approved (Rule B)

@@ -6,11 +6,14 @@ import pytest
 import json
 from httpx import AsyncClient, ASGITransport
 from app.main import app
-from app.database import init_db
+from app.database import engine, Base, init_db
 
 @pytest.fixture(autouse=True)
 async def setup_db():
-    await init_db()
+    async with engine.begin() as conn:
+        from app.models import db_models  # noqa: F401
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
 
 @pytest.mark.anyio
 async def test_full_ingestion_and_evolution_flow():

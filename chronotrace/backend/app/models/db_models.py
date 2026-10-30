@@ -66,6 +66,8 @@ class IngestionBatch(Base):
     batch_number: Mapped[Optional[int]] = mapped_column(Integer)
     records_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     events_extracted: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    failed_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    duplicate_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="completed", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
@@ -106,9 +108,12 @@ class SourceRecord(Base):
     source_date_raw: Mapped[Optional[str]] = mapped_column(String(128))   # original expression
     ingestion_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
 
-    # Raw content
+    # Raw content & provenance fingerprinting (Rule D & Idempotency)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     author: Mapped[Optional[str]] = mapped_column(String(256))
+    content_fingerprint: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    file_reference: Mapped[Optional[str]] = mapped_column(String(512))
+    metadata_json: Mapped[Optional[dict]] = mapped_column(JSON, default=dict)
 
     # Batch tracking for incremental ingestion (Rule D / R10)
     batch_id: Mapped[Optional[str]] = mapped_column(ForeignKey("ingestion_batches.id"), index=True, nullable=True)
