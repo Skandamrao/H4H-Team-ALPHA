@@ -67,8 +67,8 @@ def test_natural_date():
 
 def test_no_today_fallback():
     """Critical Rule C test: parser must never return today's date for unknown input."""
-    from datetime import datetime
-    today = datetime.utcnow().date()
+    from datetime import datetime, timezone
+    today = datetime.now(timezone.utc).date()
     d, prec, _ = parse_date_expression("not a date at all xyz")
     # If it returned today, it silently violated Rule C
     assert d is None, f"Parser returned {d} (today={today}); should return None for unknown dates"

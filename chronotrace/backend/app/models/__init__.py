@@ -1,2 +1,25 @@
-# Models package — import explicitly in code, not eagerly here.
-# This avoids importing the DB engine at module load time during tests.
+from app.models.db_models import (
+    Project,
+    IngestionBatch,
+    SourceRecord,
+    Feature,
+    FeatureAlias,
+    FeatureRelationship,
+    TemporalEvent,
+    EventRelationship,
+    EventEvidence,
+    ConflictRecord,
+)
+
+__all__ = [
+    "Project",
+    "IngestionBatch",
+    "SourceRecord",
+    "Feature",
+    "FeatureAlias",
+    "FeatureRelationship",
+    "TemporalEvent",
+    "EventRelationship",
+    "EventEvidence",
+    "ConflictRecord",
+]

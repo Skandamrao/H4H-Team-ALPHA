@@ -11,11 +11,17 @@ from __future__ import annotations
 import logging
 import uuid
 from typing import Optional
+from datetime import datetime, timezone
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.db_models import SourceRecord, TemporalEvent, Feature
-from app.schemas.ingestion import SourceRecordIn, IngestBatchRequest, IngestBatchResponse, IngestRecordResult
+from app.models.db_models import (
+    Project, IngestionBatch, SourceRecord, TemporalEvent, Feature, EventEvidence
+)
+from app.schemas.ingestion import (
+    SourceRecordIn, IngestBatchRequest, IngestBatchResponse, IngestRecordResult
+)
 from app.services.extraction_service import extract_events_from_record
 from app.services.identity_resolver import resolve_feature_mention, apply_rename
 from app.services.conflict_detector import detect_conflicts_for_feature
@@ -24,7 +30,26 @@ from app.utils.date_parser import parse_date_expression
 def _uuid() -> str:
     return str(uuid.uuid4())
 
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
 logger = logging.getLogger(__name__)
+
+
+async def _ensure_project(db: AsyncSession, project_id: str) -> Project:
+    """Ensure project exists in the database for foreign key integrity."""
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalars().first()
+    if not project:
+        project = Project(
+            id=project_id,
+            name=project_id,
+            description=f"Workspace for project {project_id}",
+            created_at=_now(),
+        )
+        db.add(project)
+        await db.flush()
+    return project
 
 
 async def ingest_batch(
@@ -39,6 +64,25 @@ async def ingest_batch(
     if not batch_id:
         batch_id = str(uuid.uuid4())
 
+    # Guarantee all records target a verified project
+    target_project_ids = {r.project_id for r in request.records}
+    for pid in target_project_ids:
+        await _ensure_project(db, pid)
+
+    primary_pid = request.records[0].project_id
+
+    # Create IngestionBatch entry
+    batch_record = IngestionBatch(
+        id=batch_id,
+        project_id=primary_pid,
+        records_count=len(request.records),
+        events_extracted=0,
+        status="processing",
+        created_at=_now(),
+    )
+    db.add(batch_record)
+    await db.flush()
+
     results: list[IngestRecordResult] = []
     total_events = 0
     total_features = 0
@@ -52,6 +96,11 @@ async def ingest_batch(
         total_features += result.features_identified
         total_conflicts += result.conflicts_detected
         batch_warnings.extend(result.warnings)
+
+    # Update batch record metrics
+    batch_record.events_extracted = total_events
+    batch_record.status = "completed"
+    batch_record.completed_at = _now()
 
     # Final flush — session commit happens in get_db() dependency
     await db.flush()
@@ -74,6 +123,9 @@ async def _ingest_single_record(
 ) -> IngestRecordResult:
     warnings: list[str] = []
 
+    # Ensure project exists
+    await _ensure_project(db, record_in.project_id)
+
     # Parse source date — Rule C
     if record_in.source_date:
         source_date = record_in.source_date
@@ -86,7 +138,7 @@ async def _ingest_single_record(
         source_date_raw = None
         warnings.append("No source_date provided — document date is unknown.")
 
-    # Persist source record (append-only)
+    # Persist source record (append-only — distinct provenance preserved)
     source = SourceRecord(
         id=_uuid(),
         project_id=record_in.project_id,
@@ -101,7 +153,7 @@ async def _ingest_single_record(
     db.add(source)
     await db.flush()  # get source.id
 
-    # Extract temporal events using LLM
+    # Extract temporal events
     extracted = await extract_events_from_record(
         project_id=record_in.project_id,
         source_id=source.id,
@@ -132,8 +184,9 @@ async def _ingest_single_record(
                 features_seen.add(feature_id)
 
         # Persist event (append-only)
+        event_id = _uuid()
         db_event = TemporalEvent(
-            id=_uuid(),
+            id=event_id,
             project_id=ev_create.project_id,
             feature_id=feature_id,
             unresolved_feature_mention=mention if not feature_id else None,
@@ -154,6 +207,17 @@ async def _ingest_single_record(
         )
         db.add(db_event)
         await db.flush()
+
+        # Persist granular EventEvidence record (Rule H)
+        db_evidence = EventEvidence(
+            id=_uuid(),
+            event_id=event_id,
+            source_id=source.id,
+            exact_quote=ev_create.evidence_excerpt,
+            context_note=f"Extracted from {source.record_type} ({source.title or 'Untitled'})",
+            created_at=_now(),
+        )
+        db.add(db_evidence)
 
         # Handle renames — update canonical name and add alias (Rule E)
         if ev_create.event_type == "RENAMED" and feature_id and ev_create.new_name:
@@ -194,7 +258,6 @@ async def _update_feature_flags(
     Rule A: APPROVED event does NOT set is_implemented.
     Rule B: PROPOSED event does NOT set is_approved.
     """
-    from sqlalchemy import select
     result = await db.execute(select(Feature).where(Feature.id == feature_id))
     feat = result.scalars().first()
     if not feat:
@@ -207,4 +270,3 @@ async def _update_feature_flags(
     elif event_type == "REMOVED":
         feat.is_removed = True
     # PROPOSED does NOT change is_approved (Rule B)
-

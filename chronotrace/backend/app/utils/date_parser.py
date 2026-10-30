@@ -91,7 +91,8 @@ def parse_date_expression(
         # dayfirst=False avoids ambiguous swaps; yearfirst=False is default
         parsed = du_parser.parse(text, dayfirst=False, yearfirst=False, fuzzy=False)
         # Reject if dateutil fell back to today's date components
-        today = datetime.utcnow().date()
+        from datetime import timezone
+        today = datetime.now(timezone.utc).date()
         if parsed.year == today.year and parsed.month == today.month and parsed.day == today.day:
             # Could be a genuine match or a fallback — treat as approximate
             return parsed.date(), "approximate", "inferred_context"
