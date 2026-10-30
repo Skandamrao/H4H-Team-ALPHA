@@ -1,0 +1,48 @@
+[
+  {
+    "project_id": "proj-alpha",
+    "record_type": "meeting_notes",
+    "title": "Sprint Planning — Feature Roadmap Q1 2024",
+    "source_date": "2024-01-10",
+    "source_date_raw": "January 10, 2024",
+    "author": "Priya Sharma",
+    "content": "Attendees: Priya Sharma, Ravi Kumar, Ananya Nair, Dev Patel\n\nAgenda: Q1 roadmap discussion\n\n1. Authentication Module\n   - Priya proposed adding OAuth2 social login support to the existing Auth module. This is a new capability currently only supporting email/password.\n   - Decision: proposal accepted for Sprint 3 (starting Feb 5, 2024). Ravi Kumar assigned as owner.\n   - Note: No implementation has started yet — this is approval only.\n\n2. Data Export Feature\n   - Dev Patel suggested adding CSV export functionality to the dashboard reports section.\n   - No decision made. Needs design review first.\n   - Ananya to schedule design review for January 22, 2024.\n\n3. Notification Service\n   - Existing email notification system to be renamed 'Comms Engine' to better reflect planned multi-channel support (email, SMS, push).\n   - Rename approved by team. Effective immediately in documentation.\n\n4. Search Module\n   - Search module (currently called 'Basic Search') to be deprecated in Q2 2024.\n   - Replacement: 'Advanced Search v2' using Elasticsearch. Priya to prepare spec by Jan 31, 2024.\n\nAction items:\n   - Ravi: begin OAuth2 design doc by Jan 20\n   - Ananya: schedule data export design review\n   - Priya: draft Advanced Search v2 spec"
+  },
+  {
+    "project_id": "proj-alpha",
+    "record_type": "design_spec",
+    "title": "OAuth2 Social Login — Technical Specification",
+    "source_date": "2024-01-22",
+    "source_date_raw": "22 January 2024",
+    "author": "Ravi Kumar",
+    "content": "Feature: OAuth2 Social Login\nStatus: Approved (Jan 10, 2024 sprint planning meeting)\nOwner: Ravi Kumar\n\n## Overview\nThis specification covers adding Google and GitHub OAuth2 sign-in to the Authentication Module.\n\n## Background\nCurrently the Authentication Module only supports email/password login. The OAuth2 Social Login feature was approved in the January 10 sprint planning session.\n\n## Scope\n- Google OAuth2 (mandatory)\n- GitHub OAuth2 (mandatory)\n- Apple Sign-In (proposed, pending security review)\n\n## Implementation Plan\n- Week 1 (Jan 29 - Feb 2): Backend OAuth2 endpoints\n- Week 2 (Feb 5 - Feb 9): Frontend integration\n- Week 3 (Feb 12 - Feb 16): Testing and QA\n- Target completion: February 16, 2024\n\n## Dependencies\n- Auth Module v2.1 (already deployed)\n- Google Cloud Console project setup (not yet done as of this writing)\n- GitHub OAuth App registration (not yet done)\n\n## Risks\n- Apple Sign-In has NOT been approved yet — it remains a proposal requiring security review."
+  },
+  {
+    "project_id": "proj-alpha",
+    "record_type": "email_thread",
+    "title": "Re: Data Export Feature — Design Review Notes",
+    "source_date": "2024-01-23",
+    "source_date_raw": "January 23, 2024",
+    "author": "Ananya Nair",
+    "content": "From: Ananya Nair <ananya@example.com>\nTo: Dev Patel <dev@example.com>; Priya Sharma <priya@example.com>\nDate: January 23, 2024\nSubject: Re: Data Export Feature — Design Review Notes\n\nTeam,\n\nSummary from today's design review for the Data Export Feature:\n\n1. CSV export is APPROVED for the dashboard. Dev Patel will own implementation.\n   - Estimated completion: February 28, 2024.\n\n2. PDF export was discussed but REJECTED at this time due to third-party library licensing concerns raised by Legal.\n   - PDF export can be re-proposed after Legal review is complete.\n\n3. The feature will be accessible only to users with the 'Admin' or 'Analyst' roles initially.\n\nNote: The Data Export Feature approval today is independent of the OAuth2 work.\n\nAnanya"
+  },
+  {
+    "project_id": "proj-alpha",
+    "record_type": "changelog",
+    "title": "Auth Module — Release Notes v2.2",
+    "source_date": "2024-02-20",
+    "source_date_raw": "February 20, 2024",
+    "author": "Ravi Kumar",
+    "content": "## Auth Module v2.2 — Released February 20, 2024\n\n### New Features\n- **OAuth2 Social Login** — SHIPPED. Google and GitHub OAuth2 sign-in are now live in production.\n  Implementation completed February 18, 2024 (2 days ahead of schedule).\n  GitHub: PR #447, #451 merged.\n\n- Apple Sign-In: NOT included in this release. Still pending security review approval.\n  (This was never approved — it remains a proposal.)\n\n### Fixes\n- Fixed token refresh race condition (issue #389)\n- Session timeout corrected to 24 hours (was incorrectly set to 2 hours)\n\n### Breaking Changes\n- None\n\n### Note on Comms Engine\nThe Notification Service has been fully renamed to Comms Engine across all documentation and code as of this release."
+  },
+  {
+    "project_id": "proj-alpha",
+    "record_type": "decision_log",
+    "title": "Architecture Decision Record — Search Module Deprecation",
+    "source_date": "2024-02-01",
+    "source_date_raw": "February 1, 2024",
+    "author": "Priya Sharma",
+    "content": "ADR-007: Deprecation of Basic Search Module\n\nStatus: APPROVED\nDate: February 1, 2024\nDecision makers: Priya Sharma, Dev Patel\n\n## Context\nThe Basic Search module was built in 2022 and does not support fuzzy search, filters, or real-time indexing.\n\n## Decision\nBasic Search will be deprecated and removed in Q2 2024 (target: April 30, 2024).\nAdvanced Search v2 (Elasticsearch-based) will replace it.\n\n## Consequences\n- Basic Search will enter maintenance-only mode immediately.\n- All new search work targets Advanced Search v2.\n- Advanced Search v2 spec was submitted by Priya Sharma on January 31, 2024.\n- Advanced Search v2 is currently in development — NOT yet implemented as of this ADR date.\n\n## Alternatives Rejected\n- Upgrading Basic Search in-place: rejected due to architectural limitations.\n- Using Algolia: rejected due to cost."
+  }
+]
+
