@@ -58,16 +58,24 @@ def validate_file_type(filename: str) -> Tuple[bool, str]:
 
 
 def extract_text_from_pdf(file_bytes: bytes) -> Tuple[str, int]:
-    """Extract plain text from a PDF using PyMuPDF. Returns (text, page_count)."""
+    """Extract plain text from a PDF using PyMuPDF or pypdf. Returns (text, page_count)."""
     try:
         import fitz  # PyMuPDF
-
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         pages = [page.get_text() for page in doc]
         doc.close()
         return "\n".join(pages), len(pages)
     except ImportError:
-        logger.warning("PyMuPDF not installed — cannot extract PDF text.")
+        pass
+
+    try:
+        import io
+        import pypdf
+        reader = pypdf.PdfReader(io.BytesIO(file_bytes))
+        pages = [page.extract_text() or "" for page in reader.pages]
+        return "\n".join(pages), len(pages)
+    except ImportError:
+        logger.warning("Neither PyMuPDF nor pypdf installed — cannot extract PDF text.")
         return "", 0
     except Exception as exc:
         logger.error("PDF extraction failed: %s", exc)
