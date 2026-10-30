@@ -1,0 +1,67 @@
+{
+  "_comment": "SYNTHETIC SAMPLE DATA — ChronoGraph AI. This document is SYNTHETIC and for demonstration only.",
+  "document_type": "project_tickets",
+  "project": "AuthFlow Platform (Synthetic)",
+  "generated_date": "2024-10-18",
+  "tickets": [
+    {
+      "ticket_id": "AUTH-101",
+      "title": "Implement GitHub OAuth as second OAuth provider",
+      "feature": "GitHub Authentication",
+      "module": "Identity and Access Module",
+      "status": "PROPOSED",
+      "created_date": "2024-10-16",
+      "description": "Following the success of Google OAuth, this ticket tracks the proposal to add GitHub OAuth as a second sign-in option, primarily targeting developer users.",
+      "proposed_by": "Priya Patel",
+      "notes": "Awaiting product approval. No implementation has begun."
+    },
+    {
+      "ticket_id": "AUTH-102",
+      "title": "Remove legacy password reset email template v1",
+      "feature": "Password Authentication",
+      "module": "Identity and Access Module",
+      "status": "IMPLEMENTED",
+      "created_date": "2024-10-14",
+      "completed_date": "2024-10-17",
+      "description": "The old password reset email template (template_v1.html) was removed and replaced with template_v2.html which uses the new branding guidelines.",
+      "implemented_by": "Daniel Kim",
+      "notes": "This is a modification to the Password Authentication feature, not a removal of the feature itself."
+    },
+    {
+      "ticket_id": "AUTH-103",
+      "title": "Database migration: add google_id column",
+      "feature": "Google OAuth Integration",
+      "module": "Identity and Access Module",
+      "status": "IMPLEMENTED",
+      "created_date": "2024-10-10",
+      "completed_date": "2024-10-12",
+      "description": "Database migration script to add google_id (VARCHAR 255, nullable) and auth_provider (ENUM) columns to the users table. Executed as part of PR-247 deployment.",
+      "implemented_by": "Priya Patel"
+    },
+    {
+      "ticket_id": "ARCH-205",
+      "title": "Rename Authentication Module to Identity and Access Module",
+      "feature": "Module Rename",
+      "module": "Identity and Access Module",
+      "status": "APPROVED",
+      "created_date": "2024-10-15",
+      "approved_date": "2024-10-15",
+      "description": "The Authentication Module is being renamed to Identity and Access Module to reflect expanded scope including authorization (RBAC) features planned for Q1 2025.",
+      "approved_by": "Sarah Chen",
+      "notes": "Rename decision was made in the October 15 team meeting."
+    },
+    {
+      "ticket_id": "AUTH-104",
+      "title": "REJECTED: Remove password authentication immediately",
+      "feature": "Password Authentication",
+      "module": "Identity and Access Module",
+      "status": "REJECTED",
+      "created_date": "2024-10-16",
+      "rejected_date": "2024-10-18",
+      "description": "An informal proposal to remove password authentication immediately (rather than through a phased deprecation) was reviewed and rejected. The team decided a phased approach is necessary.",
+      "rejected_by": "Sarah Chen",
+      "reason": "Immediate removal poses risk to enterprise customers and accessibility. Phased deprecation proposal AUTH-DEPR-01 remains active."
+    }
+  ]
+}
+
