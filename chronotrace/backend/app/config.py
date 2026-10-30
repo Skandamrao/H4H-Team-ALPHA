@@ -5,7 +5,8 @@ Never hard-code API keys.
 """
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Any
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -29,6 +30,16 @@ class Settings(BaseSettings):
     # App
     debug: bool = True
     cors_origins: str = "http://localhost:5173,http://localhost:3000"
+
+    @field_validator("debug", mode="before")
+    @classmethod
+    def parse_debug(cls, v: Any) -> bool:
+        if isinstance(v, str):
+            if v.lower() in ("true", "1", "yes", "on", "debug"):
+                return True
+            if v.lower() in ("false", "0", "no", "off", "release", "prod", "production"):
+                return False
+        return bool(v)
 
     @property
     def cors_origins_list(self) -> list[str]:

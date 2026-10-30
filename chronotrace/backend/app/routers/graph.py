@@ -15,7 +15,7 @@ from app.schemas.queries import TemporalGraphOut
 from app.schemas.events import TemporalEventOut
 from app.services.graph_service import GraphService
 
-router = APIRouter(prefix="/api/graph", tags=["graph"])
+router = APIRouter(prefix="/graph", tags=["graph"])
 
 
 @router.get("", response_model=TemporalGraphOut)

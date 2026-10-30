@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.db_models import Feature, TemporalEvent, ConflictRecord
 from app.schemas.events import TemporalEventOut, FeatureOut
-from app.schemas.queries import FeatureTimeline, TimelineEvent
+from app.schemas.queries import FeatureTimeline, TimelineEvent, ProjectTimelineOut
 from app.services.historical_state import HistoricalStateService
 from app.services.conflict_detector import detect_conflicts_for_feature
 
@@ -153,6 +153,62 @@ class TemporalEngine:
             as_of_ingestion_date=as_of_ingestion_date,
         )
 
+    @classmethod
+    async def build_project_timeline(
+        cls,
+        db: AsyncSession,
+        project_id: str,
+        as_of_event_date: Optional[date] = None,
+        as_of_ingestion_date: Optional[date] = None,
+    ) -> ProjectTimelineOut:
+        """
+        Build a project-wide chronological timeline of all events across features.
+        Supports bitemporal filtering by event date and knowledge/ingestion date.
+        """
+        filters = [
+            TemporalEvent.project_id == project_id,
+            TemporalEvent.is_superseded == False,  # noqa: E712
+        ]
+
+        if as_of_event_date:
+            filters.append(
+                (TemporalEvent.event_date <= as_of_event_date)
+                | (TemporalEvent.event_date == None)  # noqa: E711
+            )
+
+        if as_of_ingestion_date:
+            ingestion_cutoff = datetime.combine(as_of_ingestion_date, datetime.max.time())
+            filters.append(TemporalEvent.ingestion_timestamp <= ingestion_cutoff)
+
+        ev_result = await db.execute(select(TemporalEvent).where(and_(*filters)))
+        raw_events = ev_result.scalars().all()
+
+        sorted_events = cls._sort_events(raw_events)
+        uncertainty_map = cls.detect_ordering_uncertainty(sorted_events)
+
+        timeline_events: list[TimelineEvent] = []
+        for ev in sorted_events:
+            ev_out = TemporalEventOut.model_validate(ev)
+            milestone = _MILESTONE_MAP.get(ev.event_type)
+            is_uncertain = uncertainty_map.get(ev.id, False)
+
+            timeline_events.append(
+                TimelineEvent(
+                    event=ev_out,
+                    milestone_label=milestone,
+                    order_uncertain=is_uncertain,
+                    sequence_ambiguous=is_uncertain,
+                )
+            )
+
+        return ProjectTimelineOut(
+            project_id=project_id,
+            events=timeline_events,
+            total_events=len(timeline_events),
+            as_of_event_date=as_of_event_date,
+            as_of_ingestion_date=as_of_ingestion_date,
+        )
+
     @staticmethod
     def _identify_gaps(events: list[TemporalEvent]) -> list[str]:
         """
@@ -191,6 +247,17 @@ async def build_feature_timeline(
 ) -> Optional[FeatureTimeline]:
     return await TemporalEngine.build_feature_timeline(
         db, feature_id, as_of_event_date, as_of_ingestion_date
+    )
+
+
+async def build_project_timeline(
+    db: AsyncSession,
+    project_id: str,
+    as_of_event_date: Optional[date] = None,
+    as_of_ingestion_date: Optional[date] = None,
+) -> ProjectTimelineOut:
+    return await TemporalEngine.build_project_timeline(
+        db, project_id, as_of_event_date, as_of_ingestion_date
     )
 
 

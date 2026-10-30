@@ -13,7 +13,7 @@ from app.models.db_models import TemporalEvent
 from app.schemas.events import TemporalEventOut, ConflictOut
 from app.models.db_models import ConflictRecord
 
-router = APIRouter(prefix="/api/events", tags=["events"])
+router = APIRouter(prefix="/events", tags=["events"])
 
 
 @router.get("", response_model=list[TemporalEventOut])

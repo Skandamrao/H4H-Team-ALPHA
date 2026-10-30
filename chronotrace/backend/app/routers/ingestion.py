@@ -17,7 +17,7 @@ from app.schemas.ingestion import (
 from app.services.ingestion_service import ingest_batch
 from app.services.document_parser import DocumentParser
 
-router = APIRouter(prefix="/api/ingest", tags=["ingestion"])
+router = APIRouter(prefix="/ingest", tags=["ingestion"])
 
 
 class RawTextIngestRequest(BaseModel):
@@ -110,6 +110,41 @@ async def list_normalized_sources(
         .offset(offset)
     )
     return [NormalizedSourceRecordOut.model_validate(s) for s in result.scalars().all()]
+
+
+@router.get("/batches")
+async def list_batches(
+    project_id: str = Query(...),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    """
+    List all ingestion batches for a project.
+    """
+    result = await db.execute(
+        select(IngestionBatch)
+        .where(IngestionBatch.project_id == project_id)
+        .order_by(IngestionBatch.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    batches = result.scalars().all()
+    return [
+        {
+            "id": b.id,
+            "project_id": b.project_id,
+            "status": b.status,
+            "records_count": b.records_count,
+            "events_extracted": b.events_extracted,
+            "failed_count": b.failed_count,
+            "duplicate_count": b.duplicate_count,
+            "created_at": b.created_at,
+            "completed_at": b.completed_at,
+            "notes": b.notes,
+        }
+        for b in batches
+    ]
 
 
 @router.get("/batches/{batch_id}")

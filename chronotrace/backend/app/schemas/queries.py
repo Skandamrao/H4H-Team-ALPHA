@@ -45,6 +45,9 @@ class QuestionAnswer(BaseModel):
     missing_information: list[str] = Field(default_factory=list)
     cited_source_ids: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0, default=0.0)
+    question_type: Optional[str] = None
+    identified_features: list[str] = Field(default_factory=list)
+    temporal_constraint: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -69,6 +72,14 @@ class FeatureTimeline(BaseModel):
     events: list[TimelineEvent] = Field(default_factory=list)
     conflicts: list[str] = Field(default_factory=list)
     gaps: list[str] = Field(default_factory=list)
+    as_of_event_date: Optional[date] = None
+    as_of_ingestion_date: Optional[date] = None
+
+
+class ProjectTimelineOut(BaseModel):
+    project_id: str
+    events: list[TimelineEvent] = Field(default_factory=list)
+    total_events: int = 0
     as_of_event_date: Optional[date] = None
     as_of_ingestion_date: Optional[date] = None
 

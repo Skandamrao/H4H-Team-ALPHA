@@ -1,6 +1,7 @@
 """Features router — GET /api/features"""
 from __future__ import annotations
 
+from datetime import date
 from typing import Optional
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy import select
@@ -9,8 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models.db_models import Feature
 from app.schemas.events import FeatureOut
+from app.schemas.queries import FeatureStateOut
+from app.services.historical_state import HistoricalStateService
 
-router = APIRouter(prefix="/api/features", tags=["features"])
+router = APIRouter(prefix="/features", tags=["features"])
 
 
 @router.get("", response_model=list[FeatureOut])
@@ -48,4 +51,27 @@ async def get_feature(
     if not feat:
         raise HTTPException(status_code=404, detail="Feature not found")
     return FeatureOut.model_validate(feat)
+
+
+@router.get("/{feature_id}/state", response_model=FeatureStateOut)
+async def get_feature_state(
+    feature_id: str,
+    as_of_event_date: Optional[date] = Query(None, description="Event date cutoff (YYYY-MM-DD)"),
+    as_of_ingestion_date: Optional[date] = Query(None, description="Knowledge cutoff (YYYY-MM-DD)"),
+    db: AsyncSession = Depends(get_db),
+) -> FeatureStateOut:
+    """
+    Reconstruct the historical state of a feature as of an event date and optional ingestion cutoff.
+    Strictly adheres to Rules A-H (Approved != Implemented, Removal history preserved, Supersession discounts).
+    """
+    state = await HistoricalStateService.reconstruct_feature_state(
+        db=db,
+        feature_id=feature_id,
+        as_of_event_date=as_of_event_date,
+        as_of_ingestion_date=as_of_ingestion_date,
+    )
+    if not state:
+        raise HTTPException(status_code=404, detail="Feature not found")
+    return state
+
 
