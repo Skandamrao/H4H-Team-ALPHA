@@ -26,6 +26,8 @@ class FeatureAliasOut(BaseModel):
     source_id: str
     evidence_excerpt: str
     added_at: datetime
+    is_valid: bool = True
+    validity_reason: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -34,6 +36,10 @@ class FeatureOut(BaseModel):
     id: str
     project_id: str
     canonical_name: str
+    description: Optional[str] = None
+    creation_source_id: Optional[str] = None
+    creation_evidence_excerpt: Optional[str] = None
+    identity_review_status: str = "CONFIRMED"
     created_at: datetime
     is_removed: bool
     is_implemented: bool
@@ -41,6 +47,69 @@ class FeatureOut(BaseModel):
     aliases: list[FeatureAliasOut] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------------------
+# Identity Resolution schemas (P06)
+# ---------------------------------------------------------------------------
+
+RESOLUTION_STATUS = Literal[
+    "RESOLVED_EXACT_ID",
+    "RESOLVED_CANONICAL",
+    "RESOLVED_ALIAS",
+    "RESOLVED_RENAME",
+    "AMBIGUOUS_CANDIDATES",
+    "NEW_FEATURE_CREATED",
+    "UNRESOLVED",
+]
+
+
+class ResolutionResult(BaseModel):
+    """
+    Outcome of resolving a feature mention to a canonical Feature.
+
+    status values:
+      RESOLVED_EXACT_ID      — explicit canonical feature ID was provided and valid.
+      RESOLVED_CANONICAL     — exact canonical name match (case-insensitive).
+      RESOLVED_ALIAS         — exact known alias match.
+      RESOLVED_RENAME        — matched via explicit rename evidence / rename chain.
+      AMBIGUOUS_CANDIDATES   — multiple candidate features matched; Rule E prevents auto-merge.
+      NEW_FEATURE_CREATED    — no match found; a new feature was created (only if allow_new=True).
+      UNRESOLVED             — no match found and allow_new=False; nothing was created.
+    """
+    feature_id: Optional[str] = None
+    status: RESOLUTION_STATUS
+    candidate_ids: list[str] = Field(default_factory=list)
+    uncertainty_reason: Optional[str] = None
+    confidence_score: float = 1.0
+    matched_by: Optional[str] = None
+    is_ambiguous: bool = False
+    unresolved_record_id: Optional[str] = None
+    created_new_feature: bool = False
+
+
+class UnresolvedIdentityOut(BaseModel):
+    id: str
+    project_id: str
+    mention: str
+    source_id: str
+    evidence_excerpt: str
+    candidate_feature_ids: list[str] = Field(default_factory=list)
+    uncertainty_reason: str
+    status: str
+    resolved_feature_id: Optional[str] = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ResolveAmbiguityIn(BaseModel):
+    """Request to manually resolve an ambiguous/unresolved feature mention."""
+    unresolved_id: str
+    target_feature_id: Optional[str] = None
+    new_feature_name: Optional[str] = None
+    new_feature_description: Optional[str] = None
+    notes: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------

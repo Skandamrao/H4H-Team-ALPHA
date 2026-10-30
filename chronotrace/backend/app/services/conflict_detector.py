@@ -1,20 +1,23 @@
 """
-ChronoTrace AI — Conflict Detector
+ChronoTrace AI — Conflict Detector (P07)
 
 Detects GENUINE contradictions between temporal events.
-Rule F: Proposal → Approval → Implementation is NORMAL PROGRESSION, not conflict.
-Only flags events that make incompatible claims in the same time period.
+Rule F: Proposal → Approval → Implementation → Modification is NORMAL PROGRESSION, not conflict.
+Distinguishes supersession (valid historical revisions) from unresolvable contradictions.
+Preserves both source claims in ConflictRecord without deleting history.
 """
 from __future__ import annotations
 
 import logging
 import uuid
 from datetime import date
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, List, Dict, Any
+
+from sqlalchemy import select
+from app.models.db_models import ConflictRecord, TemporalEvent
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
-    from app.models.db_models import TemporalEvent as TemporalEventModel
 
 def _uuid() -> str:
     return str(uuid.uuid4())
@@ -30,16 +33,14 @@ _NORMAL_PROGRESSIONS = {
     ("IMPLEMENTED", "MODIFIED"),
     ("IMPLEMENTED", "REMOVED"),
     ("MODIFIED", "REMOVED"),
-    ("REMOVED", "PROPOSED"),   # reintroduction
-    ("REMOVED", "IMPLEMENTED"),
+    ("REMOVED", "PROPOSED"),      # Reintroduction
+    ("REMOVED", "IMPLEMENTED"),   # Reintroduction and ship
 }
 
 
 def _is_normal_progression(type_a: str, type_b: str) -> bool:
-    """Return True if type_a → type_b (or vice-versa) is a normal lifecycle step."""
-    pair = (type_a, type_b)
-    reverse = (type_b, type_a)
-    return pair in _NORMAL_PROGRESSIONS or reverse in _NORMAL_PROGRESSIONS
+    """Return True if type_a → type_b is a legitimate historical progression."""
+    return (type_a, type_b) in _NORMAL_PROGRESSIONS
 
 
 def _dates_overlap(
@@ -55,53 +56,58 @@ async def detect_conflicts_for_feature(
     db: "AsyncSession",
     project_id: str,
     feature_id: str,
-) -> list:
+) -> List[ConflictRecord]:
     """
     Check all non-superseded events for a feature and detect genuine conflicts.
-    Returns newly created ConflictRecord objects (not yet committed).
+    Returns list of ConflictRecord objects (persisting new ones if found).
     """
-    from sqlalchemy import select
-    from app.models.db_models import ConflictRecord, TemporalEvent
-
     result = await db.execute(
         select(TemporalEvent).where(
             TemporalEvent.project_id == project_id,
             TemporalEvent.feature_id == feature_id,
             TemporalEvent.is_superseded == False,  # noqa: E712
-        )
+        ).order_by(TemporalEvent.event_date)
     )
     events = result.scalars().all()
 
-    new_conflicts = []
+    existing_conflicts_res = await db.execute(
+        select(ConflictRecord).where(
+            ConflictRecord.project_id == project_id,
+            ConflictRecord.resolved == False,  # noqa: E712
+        )
+    )
+    existing_conflicts = existing_conflicts_res.scalars().all()
+    existing_pairs = {(c.event_id_a, c.event_id_b) for c in existing_conflicts} | {
+        (c.event_id_b, c.event_id_a) for c in existing_conflicts
+    }
+
+    all_feature_conflicts = [
+        c for c in existing_conflicts
+        if c.event_id_a in {e.id for e in events} or c.event_id_b in {e.id for e in events}
+    ]
 
     for i in range(len(events)):
         for j in range(i + 1, len(events)):
             a, b = events[i], events[j]
+            if (a.id, b.id) in existing_pairs:
+                continue
+
             conflict = _check_pair(a, b)
             if conflict:
-                existing = await db.execute(
-                    select(ConflictRecord).where(
-                        ConflictRecord.event_id_a == a.id,
-                        ConflictRecord.event_id_b == b.id,
-                    )
+                rec = ConflictRecord(
+                    id=_uuid(),
+                    project_id=project_id,
+                    event_id_a=a.id,
+                    event_id_b=b.id,
+                    conflict_type=conflict["type"],
+                    description=conflict["description"],
                 )
-                if existing.scalars().first() is None:
-                    rec = ConflictRecord(
-                        id=_uuid(),
-                        project_id=project_id,
-                        event_id_a=a.id,
-                        event_id_b=b.id,
-                        conflict_type=conflict["type"],
-                        description=conflict["description"],
-                    )
-                    db.add(rec)
-                    new_conflicts.append(rec)
-                    logger.warning(
-                        "Conflict detected for feature %s: %s",
-                        feature_id, conflict["description"],
-                    )
+                db.add(rec)
+                all_feature_conflicts.append(rec)
+                existing_pairs.add((a.id, b.id))
+                logger.warning("Conflict detected for feature %s: %s", feature_id, conflict["description"])
 
-    return new_conflicts
+    return all_feature_conflicts
 
 
 def _check_pair(
@@ -109,31 +115,48 @@ def _check_pair(
 ) -> Optional[dict]:
     """
     Check a pair of events for genuine conflict. Returns conflict dict or None.
-    Rule F: Normal progressions are excluded.
+    Rule F: Normal progressions and explicit supersessions are excluded.
     """
     ta, tb = a.event_type, b.event_type
 
-    # Same-type conflicts (e.g. two APPROVED events on the same feature)
-    if ta == tb == "APPROVED" and _dates_overlap(a.event_date, b.event_date, 0):
+    # 1. Supersession exclusion: if either event explicitly supersedes the other, no conflict
+    if a.supersedes_event_id == b.id or b.supersedes_event_id == a.id:
+        return None
+
+    # Check for text indicating supersession
+    if (b.description and "supersedes" in b.description.lower()) or (a.description and "supersedes" in a.description.lower()):
+        return None
+
+    # 2. Check if normal chronological progression (Rule F)
+    # If a occurred before b and a -> b is a normal progression, it is not a conflict!
+    if a.event_date and b.event_date and a.event_date < b.event_date:
+        if _is_normal_progression(ta, tb):
+            return None
+    elif b.event_date and a.event_date and b.event_date < a.event_date:
+        if _is_normal_progression(tb, ta):
+            return None
+
+    # 3. Duplicate conflicting approval on the exact same date
+    if ta == tb == "APPROVED" and a.source_id != b.source_id and _dates_overlap(a.event_date, b.event_date, 0):
         return {
             "type": "DUPLICATE_APPROVAL",
             "description": (
-                f"Two APPROVED events for the same feature on the same date: "
+                f"Two conflicting APPROVED events for the same feature on the same date: "
                 f"event {a.id} (source {a.source_id}) and event {b.id} (source {b.source_id})."
             ),
         }
 
-    # Approved then Rejected in overlapping window (contradictory status)
+    # 4. Approved and Rejected in overlapping window without supersession
     if {ta, tb} == {"APPROVED", "REJECTED"} and _dates_overlap(a.event_date, b.event_date, 7):
         return {
             "type": "APPROVED_AND_REJECTED",
             "description": (
-                f"Feature recorded as both APPROVED and REJECTED within 7 days: "
-                f"events {a.id} and {b.id}."
+                f"Contradictory status claims: Feature recorded as both APPROVED and REJECTED "
+                f"within 7 days without explicit supersession link: events {a.id} and {b.id}."
             ),
         }
 
-    # IMPLEMENTED before PROPOSED (temporal impossibility when both dates are exact)
+    # 5. IMPLEMENTED before PROPOSED (temporal impossibility when both dates are exact)
     if ta == "IMPLEMENTED" and tb == "PROPOSED":
         if (
             a.event_date_precision == "exact"
@@ -145,7 +168,7 @@ def _check_pair(
             return {
                 "type": "IMPLEMENTED_BEFORE_PROPOSED",
                 "description": (
-                    f"Feature shows IMPLEMENTED ({a.event_date}) before PROPOSED ({b.event_date}): "
+                    f"Feature recorded as IMPLEMENTED ({a.event_date}) before PROPOSED ({b.event_date}): "
                     f"events {a.id} and {b.id}."
                 ),
             }
@@ -161,9 +184,19 @@ def _check_pair(
             return {
                 "type": "IMPLEMENTED_BEFORE_PROPOSED",
                 "description": (
-                    f"Feature shows IMPLEMENTED ({b.event_date}) before PROPOSED ({a.event_date}): "
+                    f"Feature recorded as IMPLEMENTED ({b.event_date}) before PROPOSED ({a.event_date}): "
                     f"events {a.id} and {b.id}."
                 ),
             }
+
+    # 6. Same-day Contradictory REMOVED and IMPLEMENTED
+    if {ta, tb} == {"REMOVED", "IMPLEMENTED"} and _dates_overlap(a.event_date, b.event_date, 0):
+        return {
+            "type": "REMOVED_AND_IMPLEMENTED_SAME_DAY",
+            "description": (
+                f"Incompatible status: Feature recorded as both REMOVED and IMPLEMENTED on the same day: "
+                f"events {a.id} and {b.id}."
+            ),
+        }
 
     return None

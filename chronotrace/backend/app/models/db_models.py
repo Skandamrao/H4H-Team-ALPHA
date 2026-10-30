@@ -49,6 +49,9 @@ class Project(Base):
     features: Mapped[List["Feature"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     batches: Mapped[List["IngestionBatch"]] = relationship(back_populates="project", cascade="all, delete-orphan")
     events: Mapped[List["TemporalEvent"]] = relationship(back_populates="project", cascade="all, delete-orphan")
+    unresolved_records: Mapped[List["UnresolvedIdentityRecord"]] = relationship(
+        back_populates="project", lazy="selectin", cascade="all, delete-orphan"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +146,18 @@ class Feature(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), nullable=False, index=True)
     canonical_name: Mapped[str] = mapped_column(String(512), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+    # Creation evidence — the source record that first introduced this feature.
+    creation_source_id: Mapped[Optional[str]] = mapped_column(ForeignKey("source_records.id"), nullable=True)
+    creation_evidence_excerpt: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Identity review status (Rule E / P06):
+    #   CONFIRMED   — explicit alias/rename evidence or exact canonical name match.
+    #   NEEDS_REVIEW — context-supported candidate match, not yet verified.
+    #   UNRESOLVED  — ambiguous or unresolved mention, pending stronger evidence.
+    identity_review_status: Mapped[str] = mapped_column(String(64), default="CONFIRMED", nullable=False)
 
     # Soft lifecycle flags — derived from events, stored for fast queries
     is_removed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -159,6 +173,9 @@ class Feature(Base):
     incoming_relationships: Mapped[List["FeatureRelationship"]] = relationship(
         foreign_keys="FeatureRelationship.target_feature_id", back_populates="target_feature", cascade="all, delete-orphan"
     )
+    unresolved_records: Mapped[List["UnresolvedIdentityRecord"]] = relationship(
+        back_populates="feature", lazy="selectin", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         UniqueConstraint("project_id", "canonical_name", name="uq_project_canonical_feature"),
@@ -169,6 +186,10 @@ class FeatureAlias(Base):
     """
     Every name a feature has ever been known by, with its evidence source.
     Similarity alone NEVER creates an alias (Rule E).
+
+    Name validity information:
+      is_valid        — True if this alias is currently applicable to the feature.
+      validity_reason — Why this alias is/isn't valid (e.g. "Historical name before rename").
     """
     __tablename__ = "feature_aliases"
 
@@ -179,11 +200,61 @@ class FeatureAlias(Base):
     evidence_excerpt: Mapped[str] = mapped_column(Text, nullable=False)
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
 
+    # Name validity information (Rule E / P06)
+    is_valid: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    validity_reason: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+
     feature: Mapped["Feature"] = relationship(back_populates="aliases")
 
     __table_args__ = (
         UniqueConstraint("feature_id", "alias", name="uq_feature_alias"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Unresolved Identity Records  (Ambiguity control — Rule E / P06)
+# ---------------------------------------------------------------------------
+
+UNRESOLVED_IDENTITY_STATUS = (
+    "UNRESOLVED",        # No match found; mention is unresolved.
+    "AMBIGUOUS",         # Multiple candidate features matched; similarity alone cannot merge.
+    "PENDING_REVIEW",    # Flagged for manual review.
+    "RESOLVED",          # Manually resolved to a specific feature or a new feature.
+)
+
+
+class UnresolvedIdentityRecord(Base):
+    """
+    Records ambiguous or unresolved feature mentions.
+
+    Per Rule E (P06 Section D), similarity alone is NEVER proof of identity.
+    When a mention matches multiple candidate features or no features at all,
+    this record captures:
+      - the raw mention,
+      - the candidate feature IDs (if any),
+      - the reason for uncertainty,
+      - and a status that keeps the event unresolved until stronger evidence or review.
+
+    These records are append-only and never mutated after creation.
+    """
+    __tablename__ = "unresolved_identity_records"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), nullable=False, index=True)
+    mention: Mapped[str] = mapped_column(String(512), nullable=False)
+    source_id: Mapped[str] = mapped_column(ForeignKey("source_records.id"), nullable=False)
+    evidence_excerpt: Mapped[str] = mapped_column(Text, nullable=False)
+    candidate_feature_ids: Mapped[Optional[list]] = mapped_column(JSON, default=list)
+    uncertainty_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        SAEnum(*UNRESOLVED_IDENTITY_STATUS, name="unresolved_identity_status_enum"),
+        default="UNRESOLVED", nullable=False,
+    )
+    resolved_feature_id: Mapped[Optional[str]] = mapped_column(ForeignKey("features.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+    project: Mapped["Project"] = relationship(back_populates="unresolved_records")
+    feature: Mapped[Optional["Feature"]] = relationship(back_populates="unresolved_records")
 
 
 # ---------------------------------------------------------------------------

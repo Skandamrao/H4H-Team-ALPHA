@@ -12,7 +12,7 @@ from app.config import settings
 from app.database import init_db
 from app.routers import (
     ingestion_router, events_router, features_router,
-    timeline_router, qa_router,
+    timeline_router, qa_router, graph_router,
 )
 
 
@@ -48,6 +48,7 @@ app.include_router(events_router)
 app.include_router(features_router)
 app.include_router(timeline_router)
 app.include_router(qa_router)
+app.include_router(graph_router)
 
 
 @app.get("/api/health", tags=["system"])

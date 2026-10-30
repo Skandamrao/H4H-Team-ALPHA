@@ -29,6 +29,7 @@ from app.schemas.ingestion import (
 from app.services.extraction_service import extract_events_from_record
 from app.services.identity_resolver import resolve_feature_mention, apply_rename
 from app.services.conflict_detector import detect_conflicts_for_feature
+from app.services.event_relation_processor import EventRelationProcessor
 from app.services.document_parser import compute_fingerprint
 from app.utils.date_parser import parse_date_expression
 
@@ -311,11 +312,12 @@ async def _ingest_single_record(
 
         events_stored += 1
 
-    # Detect conflicts for all touched features
+    # Detect conflicts and process relationships for all touched features
     conflict_count = 0
     for fid in features_seen:
         conflicts = await detect_conflicts_for_feature(db, record_in.project_id, fid)
         conflict_count += len(conflicts)
+        await EventRelationProcessor.process_feature_relations(db, record_in.project_id, fid)
 
     return IngestRecordResult(
         source_id=source.id,
