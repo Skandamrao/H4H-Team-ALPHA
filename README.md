@@ -160,6 +160,26 @@ python run_tests.py
 
 ---
 
+## 🌍 Real-World Use Case
+
+Consider a software team that introduced Google Authentication.
+
+| Date | Event |
+|---|---|
+| Oct 5, 2024 | Google Login proposed |
+| Oct 8, 2024 | OAuth approval granted |
+| Oct 12, 2024 | Implementation completed |
+| Oct 15, 2024 | Related module discussed |
+
+A developer asks:
+
+"What was the authentication status on October 10, 2024?"
+
+ChronoGraph AI reconstructs the historical state and reports that
+authentication was approved but not yet implemented.
+
+It also retrieves the original supporting documents as evidence.
+
 ## 🎯 Hackathon Demonstration Flow
 
 1. **Dashboard** (`/dashboard`): Show system counters and event distribution chart.
